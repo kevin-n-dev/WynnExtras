@@ -10,9 +10,17 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.CustomModelDataComponent;
 import net.minecraft.item.ItemStack;
 import net.minecraft.sound.SoundEvent;
 import net.minecraft.sound.SoundEvents;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 //shows the durability of whatever you're holding (icon + number) on the hud
 //
@@ -28,11 +36,13 @@ public class DurabilityHud {
     private static final int POPUP_FADE_TICKS = 20;
     private static final int BROKEN_TICKS = 70;      //3.5 seconds, only used when the persistent banner is off
     private static final int BROKEN_FADE_TICKS = 20;
+    private static final Pattern DURABILITY_AFTER_LABEL = Pattern.compile("(?i)(durability\\D*)\\d+(\\s*/\\s*\\d+)");
+    private static final Pattern DURABILITY_BEFORE_LABEL = Pattern.compile("(?i)\\d+(\\s*/\\s*\\d+)(\\D{0,8}durability)");
 
     private static ItemStack currentStack = ItemStack.EMPTY;
     private static WynnItemData.Amount current = null;
-    private static String warnedItemName = null;     //items we already warned about so it only happens once per item
-    private static String brokenItemName = null;
+    private static final Set<String> warnedItems = new HashSet<>();
+    private static final Set<String> brokenItems = new HashSet<>();
     private static String popupText = null;
     private static int popupTicksLeft = 0;
     private static String brokenText = null;
@@ -48,7 +58,12 @@ public class DurabilityHud {
         if (popupTicksLeft > 0) popupTicksLeft--;
         if (brokenTicksLeft > 0) brokenTicksLeft--;
         current = null;
-        if (client.player == null || !cfg.durabilityHudToggle) return;
+        if (client.player == null) {
+            warnedItems.clear();
+            brokenItems.clear();
+            return;
+        }
+        if (!cfg.durabilityHudToggle) return;
 
         currentStack = client.player.getMainHandStack();
         //parse() caches by item components so doing this every tick is cheap
@@ -56,17 +71,17 @@ public class DurabilityHud {
         if (current == null) return;
 
         String name = currentStack.getName().getString();
+        String itemKey = itemKey(currentStack);
         boolean broken = current.current() <= 0;
         boolean low = current.percentage() <= cfg.durabilityWarnPercent;
 
         //if it got repaired, let it warn again next time
-        if (!broken && name.equals(brokenItemName)) brokenItemName = null;
-        if (!low && name.equals(warnedItemName)) warnedItemName = null;
+        if (!broken) brokenItems.remove(itemKey);
+        if (!low) warnedItems.remove(itemKey);
 
         if (broken && cfg.durabilityBrokenToggle) {
-            if (!name.equals(brokenItemName)) {
-                brokenItemName = name;
-                warnedItemName = name; //skip the normal low durability warning, the broken one already covers it
+            if (brokenItems.add(itemKey)) {
+                warnedItems.add(itemKey); //skip the normal low durability warning, the broken one already covers it
                 brokenText = name;
                 brokenTicksLeft = BROKEN_TICKS;
                 MinecraftUtils.sendMessageToClient(WynnExtras.addWynnExtrasPrefix(
@@ -76,8 +91,7 @@ public class DurabilityHud {
             return;
         }
 
-        if (low && cfg.durabilityWarnToggle && !name.equals(warnedItemName)) {
-            warnedItemName = name;
+        if (low && cfg.durabilityWarnToggle && warnedItems.add(itemKey)) {
             String text = name + " durability is low: " + current.current() + "/" + current.maximum()
                     + " (" + current.percentage() + "%)";
             if (cfg.durabilityWarnChat) {
@@ -89,6 +103,29 @@ public class DurabilityHud {
             }
             if (cfg.durabilityWarnSound) playSound(SoundEvents.BLOCK_ANVIL_USE, 1.0f);
         }
+    }
+
+    private static String itemKey(ItemStack stack) {
+        ItemStack keyStack = stack.copy();
+        CustomModelDataComponent modelData = keyStack.get(DataComponentTypes.CUSTOM_MODEL_DATA);
+        if (modelData != null && modelData.floats().size() > 1) {
+            float durabilityModelData = modelData.floats().get(1);
+            if (durabilityModelData >= 1 && durabilityModelData <= 15) {
+                List<Float> floats = new ArrayList<>(modelData.floats());
+                floats.remove(1);
+                keyStack.set(DataComponentTypes.CUSTOM_MODEL_DATA, new CustomModelDataComponent(
+                        floats,
+                        new ArrayList<>(modelData.flags()),
+                        new ArrayList<>(modelData.strings()),
+                        new ArrayList<>(modelData.colors())
+                ));
+            }
+        }
+
+        String components = keyStack.getComponents().toString();
+        components = DURABILITY_AFTER_LABEL.matcher(components).replaceAll("$1*$2");
+        components = DURABILITY_BEFORE_LABEL.matcher(components).replaceAll("*$1$2");
+        return stack.getItem() + "|" + components;
     }
 
     private static void playSound(SoundEvent sound, float pitch) {
