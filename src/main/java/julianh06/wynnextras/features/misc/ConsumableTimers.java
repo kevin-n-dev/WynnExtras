@@ -19,6 +19,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.sound.SoundEvent;
 import net.minecraft.sound.SoundEvents;
+import net.minecraft.text.OrderedText;
 import net.minecraft.text.Style;
 import net.minecraft.text.StyleSpriteSource;
 import net.minecraft.text.Text;
@@ -27,39 +28,23 @@ import net.minecraft.util.Identifier;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-//tags the status effects that show up after you use a food / potion / scroll and shows them
-//as hud timers with the item's icon
-//
-//- consumables are recognised from the tooltip: the plain text "Right-Click to Consume" line
-//(crafted ones) or a "Potion of ..." style name. the type badge ("CRAFTED FOOD") is drawn with
-//a sprite font so you can't read it as text, so the type comes from the name, "Area of Effect"
-//(only scrolls have that), hints in the item model / sprite font ids, and if all of that fails
-//it just says "Consumable"
-//- one use = one row, even when the item gives several effects (the row shows the longest time left)
-//- if you use several in a row, each new effect gets matched to the item that fits it best (stat
-//name + number + duration from the item lore), so a potion doesn't end up labelled as food
-//- effects are followed one by one (by their text + time left) so items that share a stat like
-//"Walk Speed" can be active at the same time
-//- labels look like "Potion: 4:59", or "Potion 1" / "Potion 2" (in drink order) when you have several
-//
-//effects aren't remembered across relogs / world changes, the server drops them anyway
 public class ConsumableTimers {
     private static final int TAG_WINDOW_TICKS = 160;  //8 seconds, food and potions take a while to actually get consumed
-    private static final int POPUP_TICKS = 70;        //about 3.5 seconds on screen
+    private static final int POPUP_TICKS = 70;
     private static final int POPUP_FADE_TICKS = 20;
     private static final int ROW_HEIGHT = 18;
+    private static final int MAX_TEXT_WIDTH = 180;
+    private static final RenderSnapshot EMPTY_RENDER_SNAPSHOT = new RenderSnapshot(List.of(), 0);
     private static final Pattern NON_LETTERS = Pattern.compile("[^a-z ]+");
     private static final Pattern NUMBER = Pattern.compile("\\d+(?:\\.\\d+)?");
     private static final Pattern TIME_PART = Pattern.compile("(\\d+)\\s*(hours?|h|minutes?|min|m|seconds?|sec|s)(?![a-z])", Pattern.CASE_INSENSITIVE);
@@ -68,9 +53,7 @@ public class ConsumableTimers {
     private static final int DURATION_TOLERANCE_SECONDS = 15;  //how far off the timer can be from our guess and still count as the same effect
 
     private enum Type {
-        POTION("Potion"), FOOD("Food"), SCROLL("Scroll"), OTHER("Consumable");
-        final String label;
-        Type(String label) { this.label = label; }
+        POTION, FOOD, SCROLL, OTHER
     }
 
     //one status effect entry we keep track of. effects are identified by their text (like
@@ -85,7 +68,6 @@ public class ConsumableTimers {
         }
     }
 
-    //a line of the item lore that has a number in it, like "Walk Speed +24%"
     private record LoreStat(String text, double number) {}
 
     //one use of a consumable. a single potion can give a few effects and they all belong to this one use
@@ -102,6 +84,8 @@ public class ConsumableTimers {
         }
     }
     private record Row(Use use, int duration, String label) {}
+    private record RenderRow(Row row, List<OrderedText> lines, int width, int height) {}
+    private record RenderSnapshot(List<RenderRow> rows, int contentWidth) {}
     private record Seen(String key, int duration, long at) {}
     private static final class Popup {
         final String text; int ticksLeft = POPUP_TICKS;
@@ -113,6 +97,9 @@ public class ConsumableTimers {
     private static final Set<Integer> warned = new HashSet<>(); //uses we already warned about
     private static final List<Popup> popups = new ArrayList<>();
     private static List<Seen> baseline = List.of();   //what the tab list showed when the first waiting item was used
+    private static RenderSnapshot renderSnapshot = EMPTY_RENDER_SNAPSHOT;
+    private static List<Row> renderedRows = List.of();
+    private static boolean renderedShowEffectName;
     private static int nextId = 0;
 
     public static void register() {
@@ -123,8 +110,6 @@ public class ConsumableTimers {
         ClientTickEvents.END_CLIENT_TICK.register(ConsumableTimers::tick);
         HudRenderCallback.EVENT.register(ConsumableTimers::render);
     }
-
-    //---------- tagging ----------
 
     private static void onUse(ItemStack stack) {
         if (!WynnExtrasConfig.INSTANCE.consumableTimersToggle || stack == null || stack.isEmpty()) return;
@@ -141,8 +126,8 @@ public class ConsumableTimers {
     }
 
     private static void tick(MinecraftClient client) {
-        if (client.player == null) {
-            uses.clear(); waiting.clear(); warned.clear(); popups.clear();
+        if (client.player == null || !WynnExtrasConfig.INSTANCE.consumableTimersToggle) {
+            clearState();
             return;
         }
 
@@ -156,7 +141,7 @@ public class ConsumableTimers {
                 int idx = findEntry(entries, taken, s.key, remainingSeconds(s, now));
                 if (idx >= 0) {
                     taken[idx] = true;
-                    s.endMillis = endOf(entries.get(idx), now);  //re-sync with the server's timer
+                    s.endMillis = endOf(entries.get(idx), now);
                     s.missingTicks = 0;
                 } else {
                     s.missingTicks++;
@@ -183,7 +168,6 @@ public class ConsumableTimers {
                 if (owner != null) owner.slots.add(new Slot(e, now));
             }
 
-            //items that got their effects are done waiting, the ones that waited too long are dropped
             for (Iterator<Use> it = waiting.iterator(); it.hasNext(); ) {
                 Use u = it.next();
                 if (!u.slots.isEmpty()) {
@@ -196,14 +180,24 @@ public class ConsumableTimers {
             uses.sort(Comparator.comparingInt(u -> u.id)); //keep drink order
         }
 
-        checkExpiryWarnings();
+        List<Row> rows = buildRows();
+        checkExpiryWarnings(rows);
+        renderSnapshot = buildRenderSnapshot(client, rows);
 
         for (Iterator<Popup> it = popups.iterator(); it.hasNext(); ) {
             if (--it.next().ticksLeft <= 0) it.remove();
         }
     }
 
-    //---------- matching effects to the item they came from ----------
+    private static void clearState() {
+        uses.clear();
+        waiting.clear();
+        warned.clear();
+        popups.clear();
+        baseline = List.of();
+        renderedRows = List.of();
+        renderSnapshot = EMPTY_RENDER_SNAPSHOT;
+    }
 
     //the waiting item whose lore fits this effect best. ties go to the one used first, which is also
     //what happens when the lore doesn't mention the stat at all
@@ -281,8 +275,6 @@ public class ConsumableTimers {
         return out;
     }
 
-    //---------- matching tab list entries ----------
-
     private static String keyOf(StatusEffectState.Effect e) {
         return TIME_SUFFIX.matcher(e.display()).replaceFirst("").trim();
     }
@@ -327,9 +319,6 @@ public class ConsumableTimers {
         return false;
     }
 
-    //---------- item type from the tooltip ----------
-
-    //what kind of consumable this is, or null if it isn't one
     private static Type classify(ItemStack stack) {
         List<String> lines = new ArrayList<>();
         lines.add(cleanLine(stack.getName().getString()));
@@ -343,6 +332,13 @@ public class ConsumableTimers {
         boolean consumable = all.contains("right click to consume")
                 || (all.contains("charges") && all.contains("duration"));
 
+        Type frameType = typeFromFrameSprite(lore);
+        if (frameType != null) return frameType;
+
+        if (all.contains("crafted food")) return Type.FOOD;
+        if (all.contains("crafted potion")) return Type.POTION;
+        if (all.contains("crafted scroll")) return Type.SCROLL;
+
         //1. the type word at the start or end of the name or a lore line: "Potion of Agility", "Scroll of ..."
         for (String line : lines) {
             if (line.isEmpty()) continue;
@@ -353,7 +349,6 @@ public class ConsumableTimers {
         }
 
         if (!consumable) {
-            //can't tell from the text, so still accept whatever the repo's item parser says
             return typeOfCategory(WynnItemParser.parse(stack).map(d -> d.category()).orElse(ItemCategory.UNKNOWN));
         }
 
@@ -366,12 +361,27 @@ public class ConsumableTimers {
         if (hints.contains("food")) return Type.FOOD;
         if (hints.contains("scroll")) return Type.SCROLL;
 
-        //4. the repo's item parser
         Type parsed = typeOfCategory(WynnItemParser.parse(stack).map(d -> d.category()).orElse(ItemCategory.UNKNOWN));
         if (parsed != null) return parsed;
 
-        //5. definitely a consumable but no idea which kind
         return Type.OTHER;
+    }
+
+    private static Type typeFromFrameSprite(LoreComponent lore) {
+        if (lore == null) return null;
+        Type[] result = new Type[1];
+        for (Text line : lore.lines()) {
+            line.visit((style, string) -> {
+                if (!(style.getFont() instanceof StyleSpriteSource.Font(Identifier id))
+                        || !id.getPath().equals("tooltip/emblem/sprite")) return Optional.empty();
+                if (string.indexOf('\uE027') >= 0) result[0] = Type.POTION;
+                else if (string.indexOf('\uE033') >= 0) result[0] = Type.FOOD;
+                else if (string.indexOf('\uE032') >= 0) result[0] = Type.SCROLL;
+                return Optional.empty();
+            }, Style.EMPTY);
+            if (result[0] != null) return result[0];
+        }
+        return null;
     }
 
     private static Type typeOfWord(String word) {
@@ -419,18 +429,15 @@ public class ConsumableTimers {
         return NON_LETTERS.matcher(s.toLowerCase(Locale.ROOT)).replaceAll(" ").replaceAll("\\s+", " ").trim();
     }
 
-    //---------- expiry warnings ----------
-
-    private static void checkExpiryWarnings() {
+    private static void checkExpiryWarnings(List<Row> rows) {
         WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
-        if (!cfg.consumableTimersToggle) return;
         if (!cfg.consumableWarnChat && !cfg.consumableWarnSound && !cfg.consumableWarnPopup) return;
 
-        for (Row row : buildRows()) {
+        for (Row row : rows) {
             int secs = row.duration();
-            if (secs < 0) continue;                                   //unknown duration
+            if (secs < 0) continue;
             if (secs > cfg.consumableWarnSeconds) { warned.remove(row.use().id); continue; } //re-arm if it got refreshed
-            if (!warned.add(row.use().id)) continue;                  //only warn once
+            if (!warned.add(row.use().id)) continue;
 
             String text = row.label() + " ends in " + secs + "s";
             if (cfg.consumableWarnChat) {
@@ -448,8 +455,6 @@ public class ConsumableTimers {
     private static void playSound(RegistryEntry<SoundEvent> sound) {
         playSound(sound.value());
     }
-
-    //---------- rows (shared by render + warnings) ----------
 
     //category toggles are checked here so switching one on later shows effects that are already running
     private static boolean categoryEnabled(Type t) {
@@ -477,28 +482,14 @@ public class ConsumableTimers {
     }
 
     private static List<Row> buildRows() {
-        WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
-
-        //which uses are visible and how many of each type (so we only add "1", "2" when there's more than one)
-        Map<Type, Integer> totals = new EnumMap<>(Type.class);
-        for (Use u : uses) {
-            if (isVisible(u, durationOf(u))) totals.merge(u.type, 1, Integer::sum);
-        }
-
-        //numbers follow drink order so "Potion 1" stays the same potion even when sorted by time
-        Map<Type, Integer> seen = new EnumMap<>(Type.class);
         List<Row> rows = new ArrayList<>();
         for (Use u : uses) {
             int d = durationOf(u);
             if (!isVisible(u, d)) continue;
-
-            int number = seen.merge(u.type, 1, Integer::sum);
-            String label = u.type.label + (totals.get(u.type) > 1 ? " " + number : "");
-            if (cfg.consumableShowEffectName) label += " (" + effectNames(u) + ")";
-            rows.add(new Row(u, d, label));
+            rows.add(new Row(u, d, effectNames(u)));
         }
 
-        if (cfg.consumableSortMode == WynnExtrasConfig.ConsumableSort.TIME_LEFT) {
+        if (WynnExtrasConfig.INSTANCE.consumableSortMode == WynnExtrasConfig.ConsumableSort.TIME_LEFT) {
             //shortest first, effects with no timer last
             rows.sort(Comparator.comparingInt(r -> r.duration() < 0 ? Integer.MAX_VALUE : r.duration()));
         }
@@ -510,7 +501,26 @@ public class ConsumableTimers {
         return !(WynnExtrasConfig.INSTANCE.consumableHideNoTimer && duration < 0);
     }
 
-    //---------- rendering ----------
+    private static RenderSnapshot buildRenderSnapshot(MinecraftClient client, List<Row> rows) {
+        WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
+        if (rows.equals(renderedRows) && cfg.consumableShowEffectName == renderedShowEffectName) return renderSnapshot;
+        List<RenderRow> renderRows = new ArrayList<>();
+        int contentWidth = 0;
+        for (Row row : rows) {
+            int secs = row.duration();
+            String time = secs < 0 ? "active" : formatTime(secs);
+            String text = cfg.consumableShowEffectName ? row.label() + ": " + time : time;
+            List<OrderedText> lines = client.textRenderer.wrapLines(Text.literal(text), MAX_TEXT_WIDTH);
+            int textWidth = lines.stream().mapToInt(client.textRenderer::getWidth).max().orElse(0);
+            int textHeight = lines.size() * (client.textRenderer.fontHeight + 1);
+            RenderRow renderRow = new RenderRow(row, lines, 20 + textWidth, Math.max(ROW_HEIGHT, textHeight));
+            renderRows.add(renderRow);
+            contentWidth = Math.max(contentWidth, renderRow.width());
+        }
+        renderedRows = List.copyOf(rows);
+        renderedShowEffectName = cfg.consumableShowEffectName;
+        return new RenderSnapshot(List.copyOf(renderRows), contentWidth);
+    }
 
     private static void render(DrawContext ctx, RenderTickCounter tickCounter) {
         WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
@@ -524,21 +534,37 @@ public class ConsumableTimers {
         ctx.getMatrices().translate(cfg.consumableTimersX, cfg.consumableTimersY);
         ctx.getMatrices().scale(cfg.consumableTimersScale, cfg.consumableTimersScale);
 
-        int dir = cfg.consumableGrowDirection == WynnExtrasConfig.GrowDirection.UP ? -1 : 1;
-        int i = 0;
-        for (Row row : buildRows()) {
-            int y = i++ * ROW_HEIGHT * dir;
-            int secs = row.duration();
-            String time = secs < 0 ? "active" : formatTime(secs);
-            String text = cfg.consumableCompact ? time : row.label() + ": " + time;
+        boolean growUp = cfg.consumableGrowDirection == WynnExtrasConfig.GrowDirection.UP;
+        RenderSnapshot snapshot = renderSnapshot;
+        int contentWidth = snapshot.contentWidth();
+        ctx.getMatrices().translate(switch (cfg.consumableTimersAlignment) {
+            case CENTER -> -contentWidth / 2f;
+            case RIGHT -> -contentWidth;
+            default -> 0;
+        }, 0);
 
-            ctx.drawItem(row.use().icon, 0, y);
-            ctx.drawText(mc.textRenderer, text, 20, y + 4, timeColor(secs), true);
+        int yOffset = 0;
+        for (RenderRow renderRow : snapshot.rows()) {
+            Row row = renderRow.row();
+            int secs = row.duration();
+            int rowHeight = renderRow.height();
+            int y = growUp ? yOffset - rowHeight + ROW_HEIGHT : yOffset;
+            int rowX = switch (cfg.consumableTimersAlignment) {
+                case CENTER -> (contentWidth - renderRow.width()) / 2;
+                case RIGHT -> contentWidth - renderRow.width();
+                default -> 0;
+            };
+
+            ctx.drawItem(row.use().icon, rowX, y);
+            for (int line = 0; line < renderRow.lines().size(); line++) {
+                ctx.drawText(mc.textRenderer, renderRow.lines().get(line), rowX + 20,
+                        y + 4 + line * (mc.textRenderer.fontHeight + 1), timeColor(secs), true);
+            }
+            yOffset += growUp ? -rowHeight : rowHeight;
         }
         ctx.getMatrices().popMatrix();
     }
 
-    //m:ss, or h:mm:ss once it's an hour or more
     private static String formatTime(int secs) {
         if (secs >= 3600) return String.format("%d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60);
         return String.format("%d:%02d", secs / 60, secs % 60);
@@ -553,14 +579,20 @@ public class ConsumableTimers {
     }
 
     private static void renderPopups(DrawContext ctx, MinecraftClient mc) {
-        int centerX = mc.getWindow().getScaledWidth() / 2;
-        int y = 40;
+        WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
+        int x = cfg.consumableWarnHudX == -1
+                ? mc.getWindow().getScaledWidth() / 2 : cfg.consumableWarnHudX;
+        ctx.getMatrices().pushMatrix();
+        ctx.getMatrices().translate(x, cfg.consumableWarnHudY);
+        ctx.getMatrices().scale(cfg.consumableWarnHudScale, cfg.consumableWarnHudScale);
+        int y = 0;
         for (Popup p : popups) {
             int alpha = p.ticksLeft >= POPUP_FADE_TICKS ? 255 : Math.max(8, p.ticksLeft * 255 / POPUP_FADE_TICKS);
             int color = (alpha << 24) | 0xFFAA00;
             int w = mc.textRenderer.getWidth(p.text);
-            ctx.drawText(mc.textRenderer, p.text, centerX - w / 2, y, color, true);
+            ctx.drawText(mc.textRenderer, p.text, -w / 2, y, color, true);
             y += 12;
         }
+        ctx.getMatrices().popMatrix();
     }
 }

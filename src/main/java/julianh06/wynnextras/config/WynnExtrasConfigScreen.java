@@ -196,10 +196,6 @@ public class WynnExtrasConfigScreen extends Screen implements ConfigScreenContex
                     }, "Play"))
                 .add(text("More to come!", "More minigames are planned to be released in the future!"))
             .endSub()
-            .sub("HUD")
-                .add(toggle("Hide Scoreboard", "Hide the sidebar scoreboard, e.g. while professing when it just gets in the way. Features that read the scoreboard keep working.",
-                        () -> config.hideScoreboard, v -> config.hideScoreboard = v))
-            .endSub()
             .sub("Privacy")
                 .add(button("Privacy policy", "You can find more information here", (x) -> {
                     LinkUtils.openLink("https://wynnextras.com/privacy");
@@ -393,94 +389,13 @@ public class WynnExtrasConfigScreen extends Screen implements ConfigScreenContex
                 .add(visibleWhen(slider("Timeout duration", "Time for how long the tracker shows \"Curse: expired\" after curse ended (in seconds)", 0, 60,
                         () -> config.curseTimeout, v -> config.curseTimeout = v),
                         () -> config.curseTrackerEnabled))
-                .sub("Provoke Timer")
+            .sub("Provoke Timer")
                 .add(toggle("Enable Provoke Timer", "Show provoke timer on HUD",
                         () -> config.provokeTimerToggle, v -> config.provokeTimerToggle = v))
                 .add(visibleWhen(slider("Duration", "Duration of the provoke timer in seconds", 0, 10,
                                 () -> config.provokeTimerDuration, v -> config.provokeTimerDuration = v),
                         () -> config.provokeTimerToggle))
-                .sub("Consumable Timers")
-                .add(toggle("Enable Consumable Timers", "Show HUD timers for potions, food and scrolls",
-                        () -> config.consumableTimersToggle, v -> config.consumableTimersToggle = v))
-                .add(visibleWhen(toggle("Show potions", "Show timers for potions",
-                                () -> config.consumableShowPotions, v -> config.consumableShowPotions = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Show food", "Show timers for food",
-                                () -> config.consumableShowFood, v -> config.consumableShowFood = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Show scrolls", "Show timers for scrolls",
-                                () -> config.consumableShowScrolls, v -> config.consumableShowScrolls = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Show effect name", "Show the effect name, e.g. Potion 1 (Agility)",
-                                () -> config.consumableShowEffectName, v -> config.consumableShowEffectName = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Hide effects without a timer", "Hide effects whose duration is unknown",
-                                () -> config.consumableHideNoTimer, v -> config.consumableHideNoTimer = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Compact mode", "Show only the icon and the time",
-                                () -> config.consumableCompact, v -> config.consumableCompact = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Hide while a menu is open", "Hide the timers in inventories and other screens",
-                                () -> config.consumableHideInMenus, v -> config.consumableHideInMenus = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(dropdown("Sort by", "Order of the timers",
-                                WynnExtrasConfig.ConsumableSort.class,
-                                () -> config.consumableSortMode, v -> config.consumableSortMode = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(dropdown("Grow direction", "Add new timers below or above the first one",
-                                WynnExtrasConfig.GrowDirection.class,
-                                () -> config.consumableGrowDirection, v -> config.consumableGrowDirection = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Colour by time left", "Green, then yellow, then red as the effect runs out",
-                                () -> config.consumableColorByTime, v -> config.consumableColorByTime = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(slider("Yellow below (seconds)", "Turn yellow when this many seconds are left", 5, 300,
-                                () -> config.consumableYellowSeconds, v -> config.consumableYellowSeconds = v),
-                        () -> config.consumableTimersToggle && config.consumableColorByTime))
-                .add(visibleWhen(slider("Red below (seconds)", "Turn red when this many seconds are left", 1, 120,
-                                () -> config.consumableRedSeconds, v -> config.consumableRedSeconds = v),
-                        () -> config.consumableTimersToggle && config.consumableColorByTime))
-                .add(visibleWhen(toggle("Warn: chat message", "Send a chat message when an effect is about to end",
-                                () -> config.consumableWarnChat, v -> config.consumableWarnChat = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Warn: sound", "Play a sound when an effect is about to end",
-                                () -> config.consumableWarnSound, v -> config.consumableWarnSound = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(toggle("Warn: on-screen popup", "Show a short message on screen when an effect is about to end",
-                                () -> config.consumableWarnPopup, v -> config.consumableWarnPopup = v),
-                        () -> config.consumableTimersToggle))
-                .add(visibleWhen(slider("Warn at (seconds left)", "How many seconds before the end to warn", 5, 120,
-                                () -> config.consumableWarnSeconds, v -> config.consumableWarnSeconds = v),
-                        () -> config.consumableTimersToggle))
-                .sub("Durability HUD")
-                .add(toggle("Enable Durability HUD", "Show the durability of the item you are holding",
-                        () -> config.durabilityHudToggle, v -> config.durabilityHudToggle = v))
-                .add(visibleWhen(dropdown("Display format", "Raw (350/350), percent (100%) or both",
-                                WynnExtrasConfig.DurabilityFormat.class,
-                                () -> config.durabilityFormat, v -> config.durabilityFormat = v),
-                        () -> config.durabilityHudToggle))
-                .add(visibleWhen(toggle("Low durability warning", "Turn red and warn when durability is low",
-                                () -> config.durabilityWarnToggle, v -> config.durabilityWarnToggle = v),
-                        () -> config.durabilityHudToggle))
-                .add(visibleWhen(toggle("Warn: chat message", "Send a chat message when durability is low",
-                                () -> config.durabilityWarnChat, v -> config.durabilityWarnChat = v),
-                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
-                .add(visibleWhen(toggle("Warn: on-screen popup", "Show a short message on screen when durability is low",
-                                () -> config.durabilityWarnPopup, v -> config.durabilityWarnPopup = v),
-                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
-                .add(visibleWhen(toggle("Warn: anvil sound", "Play an anvil sound when durability is low",
-                                () -> config.durabilityWarnSound, v -> config.durabilityWarnSound = v),
-                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
-                .add(visibleWhen(slider("Warn at (%)", "Warn when durability is at or below this percentage", 1, 100,
-                                () -> config.durabilityWarnPercent, v -> config.durabilityWarnPercent = v),
-                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
-                .add(visibleWhen(toggle("Broken alert", "Big BROKEN message, anvil sound and chat message when durability hits 0",
-                                () -> config.durabilityBrokenToggle, v -> config.durabilityBrokenToggle = v),
-                        () -> config.durabilityHudToggle))
-                .add(visibleWhen(toggle("Persistent BROKEN banner", "Keep the BROKEN message on screen the whole time the held item is at 0 durability, until you repair it",
-                                () -> config.durabilityBrokenPersistent, v -> config.durabilityBrokenPersistent = v),
-                        () -> config.durabilityHudToggle && config.durabilityBrokenToggle))
-                .sub("Radiant HUD")
+            .sub("Radiant HUD")
                 .add(toggle("Enable Radiant HUD", "Show radiant aspect tracking overlay",
                         () -> config.radiantHudEnabled, v -> config.radiantHudEnabled = v))
             .sub("Aura")
@@ -690,6 +605,83 @@ public class WynnExtrasConfigScreen extends Screen implements ConfigScreenContex
                                 () -> config.mountHelperDefaultMaterialLevel,
                                 v -> config.mountHelperDefaultMaterialLevel = v),
                         () -> config.showMountHelper))
+            .endSub()
+            .sub("Consumable Timers")
+                .add(toggle("Enable Consumable Timers", "Show HUD timers for potions, food and scrolls",
+                        () -> config.consumableTimersToggle, v -> config.consumableTimersToggle = v))
+                .add(visibleWhen(toggle("Show potions", "Show timers for potions",
+                                () -> config.consumableShowPotions, v -> config.consumableShowPotions = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Show food", "Show timers for food",
+                                () -> config.consumableShowFood, v -> config.consumableShowFood = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Show scrolls", "Show timers for scrolls",
+                                () -> config.consumableShowScrolls, v -> config.consumableShowScrolls = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Show effect name", "Show effect names next to the timer, e.g. Agility: 4:59",
+                                () -> config.consumableShowEffectName, v -> config.consumableShowEffectName = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Hide effects without a timer", "Hide effects whose duration is unknown",
+                                () -> config.consumableHideNoTimer, v -> config.consumableHideNoTimer = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Hide while a menu is open", "Hide the timers in inventories and other screens",
+                                () -> config.consumableHideInMenus, v -> config.consumableHideInMenus = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(dropdown("Sort by", "Order of the timers",
+                                WynnExtrasConfig.ConsumableSort.class,
+                                () -> config.consumableSortMode, v -> config.consumableSortMode = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Colour by time left", "Green, then yellow, then red as the effect runs out",
+                                () -> config.consumableColorByTime, v -> config.consumableColorByTime = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(slider("Yellow below (seconds)", "Turn yellow when this many seconds are left", 5, 300,
+                                () -> config.consumableYellowSeconds, v -> config.consumableYellowSeconds = v),
+                        () -> config.consumableTimersToggle && config.consumableColorByTime))
+                .add(visibleWhen(slider("Red below (seconds)", "Turn red when this many seconds are left", 1, 120,
+                                () -> config.consumableRedSeconds, v -> config.consumableRedSeconds = v),
+                        () -> config.consumableTimersToggle && config.consumableColorByTime))
+                .add(visibleWhen(toggle("Warn: chat message", "Send a chat message when an effect is about to end",
+                                () -> config.consumableWarnChat, v -> config.consumableWarnChat = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Warn: sound", "Play a sound when an effect is about to end",
+                                () -> config.consumableWarnSound, v -> config.consumableWarnSound = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(toggle("Warn: on-screen popup", "Show a short message on screen when an effect is about to end",
+                                () -> config.consumableWarnPopup, v -> config.consumableWarnPopup = v),
+                        () -> config.consumableTimersToggle))
+                .add(visibleWhen(slider("Warn at (seconds left)", "How many seconds before the end to warn", 5, 120,
+                                () -> config.consumableWarnSeconds, v -> config.consumableWarnSeconds = v),
+                        () -> config.consumableTimersToggle))
+            .sub("Durability HUD")
+                .add(toggle("Enable Durability HUD", "Show the durability of the item you are holding",
+                        () -> config.durabilityHudToggle, v -> config.durabilityHudToggle = v))
+                .add(visibleWhen(dropdown("Display format", "Raw (350/350), percent (100%) or both",
+                                WynnExtrasConfig.DurabilityFormat.class,
+                                () -> config.durabilityFormat, v -> config.durabilityFormat = v),
+                        () -> config.durabilityHudToggle))
+                .add(visibleWhen(durabilityItems("Durability layout", "Drag items between columns, reorder them, or move them to Hidden"),
+                        () -> config.durabilityHudToggle))
+                .add(visibleWhen(toggle("Low durability warning", "Turn red and warn when durability is low",
+                                () -> config.durabilityWarnToggle, v -> config.durabilityWarnToggle = v),
+                        () -> config.durabilityHudToggle))
+                .add(visibleWhen(toggle("Warn: chat message", "Send a chat message when durability is low",
+                                () -> config.durabilityWarnChat, v -> config.durabilityWarnChat = v),
+                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
+                .add(visibleWhen(toggle("Warn: on-screen popup", "Show a short message on screen when durability is low",
+                                () -> config.durabilityWarnPopup, v -> config.durabilityWarnPopup = v),
+                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
+                .add(visibleWhen(toggle("Warn: anvil sound", "Play an anvil sound when durability is low",
+                                () -> config.durabilityWarnSound, v -> config.durabilityWarnSound = v),
+                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
+                .add(visibleWhen(slider("Warn at (%)", "Warn when durability is at or below this percentage", 1, 100,
+                                () -> config.durabilityWarnPercent, v -> config.durabilityWarnPercent = v),
+                        () -> config.durabilityHudToggle && config.durabilityWarnToggle))
+                .add(visibleWhen(toggle("Broken alert", "Big BROKEN message, anvil sound and chat message when durability hits 0",
+                                () -> config.durabilityBrokenToggle, v -> config.durabilityBrokenToggle = v),
+                        () -> config.durabilityHudToggle))
+                .add(visibleWhen(toggle("Persistent BROKEN banner", "Keep the BROKEN message on screen the whole time the held item is at 0 durability, until you repair it",
+                                () -> config.durabilityBrokenPersistent, v -> config.durabilityBrokenPersistent = v),
+                        () -> config.durabilityHudToggle && config.durabilityBrokenToggle))
             .endSub()
             .add(toggle("Skill point helper", "Show you your armor in the compass menu and a button to automatically assign skill points",
                     () -> config.skillpointHelper, v -> config.skillpointHelper = v))
@@ -930,7 +922,9 @@ public class WynnExtrasConfigScreen extends Screen implements ConfigScreenContex
             .add(toggle("Server TPS", "Show the server's current ticks per second on the HUD",
                     () -> config.serverTpsEnabled, v -> config.serverTpsEnabled = v))
             .add(toggle("FPS", "Show the client's current frames per second on the HUD",
-                    () -> config.fpsHudEnabled, v -> config.fpsHudEnabled = v));
+                    () -> config.fpsHudEnabled, v -> config.fpsHudEnabled = v))
+            .add(toggle("Hide Scoreboard", "Hide the sidebar scoreboard, e.g. while professing when it just gets in the way. Features that read the scoreboard keep working.",
+                    () -> config.hideScoreboard, v -> config.hideScoreboard = v));
 
         // ===== KEYBINDS =====
         category("Keybinds", 0xFF0496C9)
@@ -1307,6 +1301,10 @@ public class WynnExtrasConfigScreen extends Screen implements ConfigScreenContex
                 () -> WynnExtrasConfig.TOTEM_TIMER_EFFECT_NAMES,
                 "Active effects",
                 "Available effects");
+    }
+
+    private ConfigOption durabilityItems(String name, String desc) {
+        return new DurabilityLayoutOption(name, desc, config);
     }
 
     private List<String> visibleClassSelectionLines(List<String> lines) {

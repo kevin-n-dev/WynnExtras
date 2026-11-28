@@ -12,35 +12,33 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.CustomModelDataComponent;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.sound.SoundEvent;
 import net.minecraft.sound.SoundEvents;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-//shows the durability of whatever you're holding (icon + number) on the hud
-//
-//when it gets low (at or under the % you pick) the text goes red and you get any mix of
-//chat message / popup / anvil sound, once per item. at 0 durability you get the big BROKEN
-//message in the middle of the screen plus an anvil sound and a chat message, also once per item.
-//there's an option to keep the BROKEN banner up the whole time the item is at 0 until you repair it
-//
-//the durability comes from the item lore ("Durability 350/350") through the existing
-//WynnItemParser, items without durability just show nothing
 public class DurabilityHud {
-    private static final int POPUP_TICKS = 100;      //5 seconds
+    private static final int POPUP_TICKS = 100;
     private static final int POPUP_FADE_TICKS = 20;
-    private static final int BROKEN_TICKS = 70;      //3.5 seconds, only used when the persistent banner is off
+    private static final int BROKEN_TICKS = 70;
     private static final int BROKEN_FADE_TICKS = 20;
     private static final Pattern DURABILITY_AFTER_LABEL = Pattern.compile("(?i)(durability\\D*)\\d+(\\s*/\\s*\\d+)");
     private static final Pattern DURABILITY_BEFORE_LABEL = Pattern.compile("(?i)\\d+(\\s*/\\s*\\d+)(\\D{0,8}durability)");
 
-    private static ItemStack currentStack = ItemStack.EMPTY;
-    private static WynnItemData.Amount current = null;
+    private record DisplayItem(ItemStack stack, WynnItemData.Amount durability, String text) {}
+    private record WarningItem(Item item, int componentsHash, int count, String key, String name) {}
+
+    private static List<List<DisplayItem>> currentColumns = List.of();
+    private static final Map<String, WarningItem> warningItemCache = new HashMap<>();
     private static final Set<String> warnedItems = new HashSet<>();
     private static final Set<String> brokenItems = new HashSet<>();
     private static String popupText = null;
@@ -57,31 +55,59 @@ public class DurabilityHud {
         WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
         if (popupTicksLeft > 0) popupTicksLeft--;
         if (brokenTicksLeft > 0) brokenTicksLeft--;
-        current = null;
+        currentColumns = List.of();
         if (client.player == null) {
             warnedItems.clear();
             brokenItems.clear();
+            warningItemCache.clear();
             return;
         }
         if (!cfg.durabilityHudToggle) return;
 
-        currentStack = client.player.getMainHandStack();
-        //parse() caches by item components so doing this every tick is cheap
-        current = WynnItemParser.parse(currentStack).flatMap(d -> d.durability()).orElse(null);
-        if (current == null) return;
+        List<List<DisplayItem>> columns = new ArrayList<>();
+        for (List<String> configuredColumn : cfg.getDurabilityItemColumns()) {
+            List<DisplayItem> items = new ArrayList<>();
+            for (String itemId : configuredColumn) {
+                ItemStack stack = stackFor(client, itemId);
+                WynnItemData.Amount durability = WynnItemParser.parse(stack).flatMap(d -> d.durability()).orElse(null);
+                if (durability == null) continue;
+                items.add(new DisplayItem(stack, durability, displayText(cfg, durability)));
+                updateWarnings(cfg, itemId, stack, durability);
+            }
+            columns.add(List.copyOf(items));
+        }
+        currentColumns = List.copyOf(columns);
+    }
 
-        String name = currentStack.getName().getString();
-        String itemKey = itemKey(currentStack);
-        boolean broken = current.current() <= 0;
-        boolean low = current.percentage() <= cfg.durabilityWarnPercent;
+    private static ItemStack stackFor(MinecraftClient client, String itemId) {
+        return switch (itemId) {
+            case WynnExtrasConfig.DURABILITY_ITEM_WEAPON -> client.player.getMainHandStack();
+            case WynnExtrasConfig.DURABILITY_ITEM_HELMET -> client.player.getEquippedStack(EquipmentSlot.HEAD);
+            case WynnExtrasConfig.DURABILITY_ITEM_CHESTPLATE -> client.player.getEquippedStack(EquipmentSlot.CHEST);
+            case WynnExtrasConfig.DURABILITY_ITEM_LEGGINGS -> client.player.getEquippedStack(EquipmentSlot.LEGS);
+            case WynnExtrasConfig.DURABILITY_ITEM_BOOTS -> client.player.getEquippedStack(EquipmentSlot.FEET);
+            case WynnExtrasConfig.DURABILITY_ITEM_RING_1 -> client.player.getInventory().getStack(9);
+            case WynnExtrasConfig.DURABILITY_ITEM_RING_2 -> client.player.getInventory().getStack(10);
+            case WynnExtrasConfig.DURABILITY_ITEM_BRACELET -> client.player.getInventory().getStack(11);
+            case WynnExtrasConfig.DURABILITY_ITEM_NECKLACE -> client.player.getInventory().getStack(12);
+            default -> ItemStack.EMPTY;
+        };
+    }
 
-        //if it got repaired, let it warn again next time
+    private static void updateWarnings(WynnExtrasConfig cfg, String itemId, ItemStack stack,
+                                       WynnItemData.Amount durability) {
+        WarningItem warningItem = warningItem(itemId, stack);
+        String name = warningItem.name();
+        String itemKey = warningItem.key();
+        boolean broken = durability.current() <= 0;
+        boolean low = durability.percentage() <= cfg.durabilityWarnPercent;
+
         if (!broken) brokenItems.remove(itemKey);
         if (!low) warnedItems.remove(itemKey);
 
         if (broken && cfg.durabilityBrokenToggle) {
             if (brokenItems.add(itemKey)) {
-                warnedItems.add(itemKey); //skip the normal low durability warning, the broken one already covers it
+                warnedItems.add(itemKey);
                 brokenText = name;
                 brokenTicksLeft = BROKEN_TICKS;
                 MinecraftUtils.sendMessageToClient(WynnExtras.addWynnExtrasPrefix(
@@ -92,8 +118,8 @@ public class DurabilityHud {
         }
 
         if (low && cfg.durabilityWarnToggle && warnedItems.add(itemKey)) {
-            String text = name + " durability is low: " + current.current() + "/" + current.maximum()
-                    + " (" + current.percentage() + "%)";
+            String text = name + " durability is low: " + durability.current() + "/" + durability.maximum()
+                    + " (" + durability.percentage() + "%)";
             if (cfg.durabilityWarnChat) {
                 MinecraftUtils.sendMessageToClient(WynnExtras.addWynnExtrasPrefix("§c" + text));
             }
@@ -103,6 +129,19 @@ public class DurabilityHud {
             }
             if (cfg.durabilityWarnSound) playSound(SoundEvents.BLOCK_ANVIL_USE, 1.0f);
         }
+    }
+
+    private static WarningItem warningItem(String itemId, ItemStack stack) {
+        int componentsHash = stack.getComponents().hashCode();
+        WarningItem cached = warningItemCache.get(itemId);
+        if (cached != null && cached.item() == stack.getItem()
+                && cached.componentsHash() == componentsHash && cached.count() == stack.getCount()) {
+            return cached;
+        }
+        WarningItem result = new WarningItem(stack.getItem(), componentsHash, stack.getCount(),
+                itemId + "|" + itemKey(stack), cleanItemName(stack));
+        warningItemCache.put(itemId, result);
+        return result;
     }
 
     private static String itemKey(ItemStack stack) {
@@ -139,45 +178,77 @@ public class DurabilityHud {
 
         renderPopup(ctx, mc);
         renderBroken(ctx, mc);
-        if (current == null) return;
+        for (int column = 0; column < currentColumns.size(); column++) {
+            List<DisplayItem> items = currentColumns.get(column);
+            if (items.isEmpty()) continue;
+            ctx.getMatrices().pushMatrix();
+            ctx.getMatrices().translate(cfg.getDurabilityHudColumnX(column), cfg.getDurabilityHudColumnY(column));
+            ctx.getMatrices().scale(cfg.durabilityHudScale, cfg.durabilityHudScale);
+            int contentWidth = items.stream()
+                    .mapToInt(item -> 20 + mc.textRenderer.getWidth(item.text()))
+                    .max().orElse(0);
+            WynnExtrasConfig.Align alignment = cfg.getDurabilityHudColumnAlignment(column);
+            ctx.getMatrices().translate(switch (alignment) {
+                case CENTER -> -contentWidth / 2f;
+                case RIGHT -> -contentWidth;
+                default -> 0;
+            }, 0);
+            boolean growUp = cfg.getDurabilityHudColumnGrowDirection(column) == WynnExtrasConfig.GrowDirection.UP;
+            int y = growUp ? -(items.size() - 1) * 18 : 0;
+            for (DisplayItem item : items) {
+                WynnItemData.Amount durability = item.durability();
+                String text = item.text();
+                int rowWidth = 20 + mc.textRenderer.getWidth(text);
+                int rowX = switch (alignment) {
+                    case CENTER -> (contentWidth - rowWidth) / 2;
+                    case RIGHT -> contentWidth - rowWidth;
+                    default -> 0;
+                };
+                boolean low = cfg.durabilityWarnToggle && durability.percentage() <= cfg.durabilityWarnPercent;
+                ctx.drawItem(item.stack(), rowX, y);
+                ctx.drawText(mc.textRenderer, text, rowX + 20, y + 4, low ? 0xFFFF5555 : 0xFFFFFFFF, true);
+                y += 18;
+            }
+            ctx.getMatrices().popMatrix();
+        }
+    }
 
-        String text = switch (cfg.durabilityFormat) {
-            case RAW -> current.current() + "/" + current.maximum();
-            case PERCENT -> current.percentage() + "%";
-            case BOTH -> current.current() + "/" + current.maximum() + " (" + current.percentage() + "%)";
+    private static String displayText(WynnExtrasConfig config, WynnItemData.Amount durability) {
+        return switch (config.durabilityFormat) {
+            case RAW -> durability.current() + "/" + durability.maximum();
+            case PERCENT -> durability.percentage() + "%";
+            case BOTH -> durability.current() + "/" + durability.maximum() + " (" + durability.percentage() + "%)";
         };
-        boolean low = cfg.durabilityWarnToggle && current.percentage() <= cfg.durabilityWarnPercent;
+    }
 
+    private static void renderPopup(DrawContext ctx, MinecraftClient mc) {
+        if (popupText == null || popupTicksLeft <= 0) return;
+        WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
+        int alpha = fade(popupTicksLeft, POPUP_FADE_TICKS);
+        int w = mc.textRenderer.getWidth(popupText);
+        int x = cfg.durabilityWarnHudX == -1
+                ? mc.getWindow().getScaledWidth() / 2 : cfg.durabilityWarnHudX;
         ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().translate(cfg.durabilityHudX, cfg.durabilityHudY);
-        ctx.getMatrices().scale(cfg.durabilityHudScale, cfg.durabilityHudScale);
-        ctx.drawItem(currentStack, 0, 0);
-        ctx.drawText(mc.textRenderer, text, 20, 4, low ? 0xFFFF5555 : 0xFFFFFFFF, true);
+        ctx.getMatrices().translate(x, cfg.durabilityWarnHudY);
+        ctx.getMatrices().scale(cfg.durabilityWarnHudScale, cfg.durabilityWarnHudScale);
+        ctx.drawText(mc.textRenderer, popupText, -w / 2, 0,
+                (alpha << 24) | 0xFF5555, true);
         ctx.getMatrices().popMatrix();
     }
 
-    //small red message near the top of the screen that fades out
-    private static void renderPopup(DrawContext ctx, MinecraftClient mc) {
-        if (popupText == null || popupTicksLeft <= 0) return;
-        int alpha = fade(popupTicksLeft, POPUP_FADE_TICKS);
-        int w = mc.textRenderer.getWidth(popupText);
-        ctx.drawText(mc.textRenderer, popupText, mc.getWindow().getScaledWidth() / 2 - w / 2, 55,
-                (alpha << 24) | 0xFF5555, true);
-    }
-
-    //the big BROKEN banner across the middle of the screen. normally it fades out after a few
-    //seconds, with the persistent option on it stays (with a slight pulse) for as long as the
-    //held item is at 0 durability
     private static void renderBroken(DrawContext ctx, MinecraftClient mc) {
         WynnExtrasConfig cfg = WynnExtrasConfig.INSTANCE;
         boolean persistent = cfg.durabilityBrokenToggle && cfg.durabilityBrokenPersistent
-                && current != null && current.current() <= 0;
+                && currentColumns.stream().flatMap(List::stream)
+                .anyMatch(item -> item.durability().current() <= 0);
 
         String itemName;
         int alpha;
         if (persistent) {
-            itemName = currentStack.getName().getString();
-            alpha = 212 + (int) (43 * Math.sin(System.currentTimeMillis() / 250.0)); //pulses between roughly 170 and 255
+            itemName = currentColumns.stream().flatMap(List::stream)
+                    .filter(item -> item.durability().current() <= 0)
+                    .findFirst().map(item -> cleanItemName(item.stack())).orElseThrow();
+            alpha = 212 + (int) (43 * Math.sin(System.currentTimeMillis() / 250.0));
         } else if (brokenText != null && brokenTicksLeft > 0) {
             itemName = brokenText;
             alpha = fade(brokenTicksLeft, BROKEN_FADE_TICKS);
@@ -193,7 +264,7 @@ public class DurabilityHud {
         int fontH = mc.textRenderer.fontHeight;
         int titleW = mc.textRenderer.getWidth(title);
         int subW = mc.textRenderer.getWidth(sub);
-        float titleScale = Math.min(12f, screenW * 0.6f / titleW); //scaled so it fills most of the screen width
+        float titleScale = Math.min(12f, screenW * 0.6f / titleW);
         float subScale = 2f;
 
         float titleH = fontH * titleScale;
@@ -201,7 +272,6 @@ public class DurabilityHud {
         float gap = 8f;
         float top = screenH / 2f - (titleH + gap + subH) / 2f;
 
-        //dark red band behind the text
         int bandAlpha = Math.max(4, alpha * 0x88 / 255);
         ctx.fill(0, (int) (top - 14), screenW, (int) (top + titleH + gap + subH + 14), (bandAlpha << 24) | 0x300000);
 
@@ -218,9 +288,17 @@ public class DurabilityHud {
         ctx.getMatrices().popMatrix();
     }
 
-    //stays at 255 until the last fadeTicks, then fades out. never goes under 8 because text with
-    //a really low alpha renders weird
     private static int fade(int ticksLeft, int fadeTicks) {
+        // Very low alpha renders text incorrectly.
         return ticksLeft >= fadeTicks ? 255 : Math.max(8, ticksLeft * 255 / fadeTicks);
+    }
+
+    private static String cleanItemName(ItemStack stack) {
+        return stack.getName().getString()
+                .replace("À", "")
+                .replaceAll("§[0-9a-fk-orA-FK-OR]", "")
+                .replaceAll("[^\\x20-\\x7E]", "")
+                .replaceAll("^\\s*Shiny\\s+", "")
+                .strip();
     }
 }

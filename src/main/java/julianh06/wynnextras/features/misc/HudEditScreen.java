@@ -4,12 +4,19 @@ import julianh06.wynnextras.config.WynnExtrasConfig;
 import julianh06.wynnextras.features.qol.AttackTimer;
 import julianh06.wynnextras.features.raid.RaidSessionTracker;
 import julianh06.wynnextras.features.raid.tna.TreeRoomMinimap;
+import julianh06.wynnextras.utils.MinecraftUtils;
+import julianh06.wynnextras.wynncraft.item.WynnItemParser;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gl.RenderPipelines;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.input.KeyInput;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.item.ItemStack;
+import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
@@ -18,23 +25,28 @@ import java.util.List;
 import java.util.Map;
 
 public class HudEditScreen extends Screen {
-    private double focusedMouseX, focusedMouseY;
-
     private static class HudElement {
         final String id;
-        final Text preview;
+        final List<Text> previewLines;
         final int defaultColor;
         int x, y, w;
         int customH = -1; // -1 = use default H
         boolean fixedSize = false; // true = don't allow scaling, don't center-shift in init
         boolean topLeft = false;  // true = position stored as top-left (not center)
+        boolean alignedAnchor = false;
         boolean preserveDefaultScale = false;
         boolean scaleChanged = false;
         float scale;
         boolean dragging;
         int dragOffX, dragOffY;
         boolean snappedX, snappedY;
+        int initialX, initialY;
+        float initialScale;
+        boolean initialStateSet;
         WynnExtrasConfig.Align alignment;
+        WynnExtrasConfig.GrowDirection growDirection = WynnExtrasConfig.GrowDirection.DOWN;
+        int durabilityColumn = -1;
+        List<String> durabilityItems = List.of();
 
         HudElement(String id, String preview, int x, int y, float scale, WynnExtrasConfig.Align alignment) {
             this(id, Text.literal(preview), x, y, scale, alignment, 0xFFFFFFFF);
@@ -45,8 +57,13 @@ public class HudEditScreen extends Screen {
         }
 
         HudElement(String id, Text preview, int x, int y, float scale, WynnExtrasConfig.Align alignment, int defaultColor) {
+            this(id, List.of(preview), x, y, scale, alignment, defaultColor);
+        }
+
+        HudElement(String id, List<Text> previewLines, int x, int y, float scale,
+                   WynnExtrasConfig.Align alignment, int defaultColor) {
             this.id = id;
-            this.preview = preview;
+            this.previewLines = previewLines;
             this.x = x;
             this.y = y;
             this.scale = scale;
@@ -63,8 +80,24 @@ public class HudEditScreen extends Screen {
 
     private static final int H = 14;
     private static final int SNAP_DIST = 8;
+    private static final int DOCK_DIST = 14;
     private static final boolean HUD_COLOR_EDITING_ENABLED = false; //temporarily disabled since its not finished yet
     private final List<HudElement> elements = new ArrayList<>();
+    private HudElement selectedElement;
+    private int snapGuideX = -1;
+    private int snapGuideY = -1;
+    private List<HudElement> pressedOverlapElements = List.of();
+    private HudElement pressedElement;
+    private int pendingDurabilitySplit = -1;
+    private double pressMouseX;
+    private double pressMouseY;
+    private boolean dragMoved;
+    private int dockTargetColumn = -1;
+    private boolean dockBeforeTarget;
+    private int dockGuideX = -1;
+    private int dockGuideW;
+    private int dockGuideY = -1;
+    private boolean layoutInitialized;
 
     // Color edit popup state (HSV internally, converted to RGB on save)
     private HudElement colorEditTarget = null;
@@ -100,26 +133,35 @@ public class HudEditScreen extends Screen {
                     c.provokeTimerX, c.provokeTimerY, c.provokeTimerScale, c.provokeTimerAlignment, provokeColor));
         }
         if (c.consumableTimersToggle) {
-            String consumableText = c.consumableCompact ? "4:59" : "Potion: 4:59";
+            String consumableText = c.consumableShowEffectName ? "Walk Speed: 4:59" : "4:59";
             //leading spaces leave room for the item icon that gets drawn in front of the text
             HudElement consumableEl = new HudElement("consumables", "     " + consumableText,
-                    c.consumableTimersX, c.consumableTimersY, c.consumableTimersScale, WynnExtrasConfig.Align.LEFT, 0xFF55FF55);
+                    c.consumableTimersX, c.consumableTimersY, c.consumableTimersScale,
+                    c.consumableTimersAlignment, 0xFF55FF55);
             consumableEl.topLeft = true;
+            consumableEl.alignedAnchor = true;
+            consumableEl.growDirection = c.consumableGrowDirection;
             consumableEl.customH = 16;
             elements.add(consumableEl);
         }
+        if (c.consumableTimersToggle && c.consumableWarnPopup) {
+            HudElement warning = new HudElement("consumableWarning", "Walk Speed ends in 30s",
+                    c.consumableWarnHudX, c.consumableWarnHudY, c.consumableWarnHudScale,
+                    WynnExtrasConfig.Align.CENTER, 0xFFFFAA00);
+            warning.topLeft = true;
+            warning.alignedAnchor = true;
+            elements.add(warning);
+        }
         if (c.durabilityHudToggle) {
-            String durabilityText = switch (c.durabilityFormat) {
-                case RAW -> "350/350";
-                case PERCENT -> "100%";
-                case BOTH -> "350/350 (100%)";
-            };
-            //leading spaces leave room for the item icon that gets drawn in front of the text
-            HudElement durabilityEl = new HudElement("durability", "     " + durabilityText,
-                    c.durabilityHudX, c.durabilityHudY, c.durabilityHudScale, WynnExtrasConfig.Align.LEFT);
-            durabilityEl.topLeft = true;
-            durabilityEl.customH = 16;
-            elements.add(durabilityEl);
+            addDurabilityElements(c);
+        }
+        if (c.durabilityHudToggle && c.durabilityWarnToggle && c.durabilityWarnPopup) {
+            HudElement warning = new HudElement("durabilityWarning", "Item durability is low: 9/52 (17%)",
+                    c.durabilityWarnHudX, c.durabilityWarnHudY, c.durabilityWarnHudScale,
+                    WynnExtrasConfig.Align.CENTER, 0xFFFF5555);
+            warning.topLeft = true;
+            warning.alignedAnchor = true;
+            elements.add(warning);
         }
         if (c.totemTimerEnabled) {
             Map<String, String> previewEffects = new HashMap<>();
@@ -184,7 +226,7 @@ public class HudEditScreen extends Screen {
         }
         if (c.tnaTreeMap) {
             HudElement treemap = new HudElement("treemap", "Tree Minimap",
-                    c.treeMapX, c.treeMapY, TreeRoomMinimap.getEffectiveScale(c.tnaTreeMapScale), WynnExtrasConfig.Align.LEFT);
+                    c.treeMapX, c.treeMapY, TreeRoomMinimap.getEffectiveScale(c.tnaTreeMapScale), WynnExtrasConfig.Align.CENTER);
             treemap.customH = 130;
             treemap.w = 130;
             treemap.fixedSize = true;
@@ -244,18 +286,58 @@ public class HudEditScreen extends Screen {
         }
     }
 
+    private void addDurabilityElements(WynnExtrasConfig config) {
+        List<List<String>> durabilityColumns = config.getDurabilityItemColumns();
+        for (int column = 0; column < durabilityColumns.size(); column++) {
+            List<String> itemIds = durabilityColumns.get(column);
+            if (itemIds.isEmpty()) continue;
+            List<Text> previewLines = new ArrayList<>();
+            for (int row = 0; row < itemIds.size(); row++) {
+                previewLines.add(Text.literal("     " + durabilityPreviewText(config.durabilityFormat, row)));
+            }
+            HudElement durabilityElement = new HudElement("durability:" + column, previewLines,
+                    config.getDurabilityHudColumnX(column), config.getDurabilityHudColumnY(column),
+                    config.durabilityHudScale, config.getDurabilityHudColumnAlignment(column), 0xFFFFFFFF);
+            durabilityElement.topLeft = true;
+            durabilityElement.alignedAnchor = true;
+            durabilityElement.customH = itemIds.size() * 18;
+            durabilityElement.durabilityColumn = column;
+            durabilityElement.durabilityItems = List.copyOf(itemIds);
+            durabilityElement.growDirection = config.getDurabilityHudColumnGrowDirection(column);
+            elements.add(durabilityElement);
+        }
+    }
+
     @Override
     public boolean shouldPause() { return false; }
 
     @Override
+    public void blur() {}
+
+    @Override
+    protected void applyBlur(DrawContext context) {}
+
+    @Override
     public void init() {
         super.init();
+        if (layoutInitialized) {
+            for (HudElement element : elements) {
+                element.x = Math.clamp(element.x, 0, Math.max(0, width - element.sw()));
+                element.y = Math.clamp(element.y, 0, Math.max(0, height - element.sh()));
+            }
+            return;
+        }
+        layoutInitialized = true;
         for (HudElement e : elements) {
             if (!e.fixedSize) {
-                e.w = textRenderer.getWidth(e.preview) + 6;
+                e.w = e.previewLines.stream().mapToInt(textRenderer::getWidth).max().orElse(1)
+                        + (e.alignedAnchor ? 0 : 6);
                 if (!e.topLeft) {
                     e.x = e.x - e.sw() / 2;
                     e.y = e.y - e.sh() / 2;
+                } else if (e.alignedAnchor) {
+                    e.x -= alignmentOffset(e);
+                    e.y -= growthOffset(e);
                 }
             }
 
@@ -277,6 +359,12 @@ public class HudEditScreen extends Screen {
             if (e.id.equals("notifier") && WynnExtrasConfig.INSTANCE.notifierX == -1) {
                 e.x = (width - e.sw()) / 2;
             }
+            if (e.id.equals("durabilityWarning") && WynnExtrasConfig.INSTANCE.durabilityWarnHudX == -1) {
+                e.x = (width - e.sw()) / 2;
+            }
+            if (e.id.equals("consumableWarning") && WynnExtrasConfig.INSTANCE.consumableWarnHudX == -1) {
+                e.x = (width - e.sw()) / 2;
+            }
             if (e.id.equals("notifier") && WynnExtrasConfig.INSTANCE.notifierY == -1) {
                 e.y = (int) (height * 0.3f);
             }
@@ -285,38 +373,46 @@ public class HudEditScreen extends Screen {
             // off the top-left edge by the center-shift above.
             e.x = Math.max(4, Math.min(width - e.sw() - 4, e.x));
             e.y = Math.max(4, Math.min(height - e.sh() - 4, e.y));
+            rememberInitialState(e);
         }
     }
 
     @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
-        focusedMouseX = mouseX;
-        focusedMouseY = mouseY;
         ctx.fill(0, 0, width, height, 0x55000000);
 
-        int centerX = width / 2;
-        int centerY = height / 2;
-        boolean anySnappedX = false, anySnappedY = false;
-        for (HudElement e : elements) {
-            if (e.snappedX) anySnappedX = true;
-            if (e.snappedY) anySnappedY = true;
-        }
-        if (anySnappedX) {
-            ctx.fill(centerX, 0, centerX + 1, height, 0x4400FF00);
-        }
-        if (anySnappedY) {
-            ctx.fill(0, centerY, width, centerY + 1, 0x4400FF00);
-        }
+        if (snapGuideX >= 0) ctx.fill(snapGuideX, 0, snapGuideX + 1, height, 0x7700FF88);
+        if (snapGuideY >= 0) ctx.fill(0, snapGuideY, width, snapGuideY + 1, 0x7700FF88);
 
         String hint = elements.isEmpty()
                 ? "No HUD elements enabled  |  Esc to close"
-                : "Drag to move  |  Scroll to resize  |  Esc to save";
+                : "Drag: move  |  Scroll: resize  |  Arrows: nudge  |  Arrows + Shift: nudge 10 px  |  R: reset  |  Esc: save";
         ctx.drawText(textRenderer, hint, 4, height - 12, 0xFFaaaaaa, true);
 
-        // Draw unfocused elements first.
-        for (HudElement e : elements) {
-            if (e != colorEditTarget) drawElement(ctx, e, mouseX, mouseY);
+        if (selectedElement != null) {
+            int selectedX = selectedElement.alignedAnchor ? alignmentAnchorX(selectedElement) : selectedElement.x;
+            int selectedY = selectedElement.alignedAnchor ? growthAnchorY(selectedElement) : selectedElement.y;
+            String selected = displayName(selectedElement) + " x " + selectedX + " y "
+                    + selectedY + " scale " + String.format("%.1f", selectedElement.scale);
+            int infoW = textRenderer.getWidth(selected) + 12;
+            ctx.fill(width / 2 - infoW / 2, 4, width / 2 + infoW / 2, 23, 0xDD111111);
+            ctx.drawCenteredTextWithShadow(textRenderer, selected, width / 2, 7, 0xFFFFFFFF);
         }
+
+        for (HudElement e : elements) {
+            if (e != colorEditTarget && e != selectedElement) drawElement(ctx, e, mouseX, mouseY);
+        }
+        if (selectedElement != null && selectedElement != colorEditTarget) {
+            drawElement(ctx, selectedElement, mouseX, mouseY);
+        }
+        if (dockGuideY >= 0) {
+            ctx.fill(dockGuideX, dockGuideY - 1, dockGuideX + dockGuideW, dockGuideY + 1, 0xFFFFAA00);
+        }
+        if (selectedElement != null && supportsAlignment(selectedElement)) {
+            renderWidgetToolbar(ctx, selectedElement, mouseX, mouseY);
+        }
+        renderOverlapHint(ctx, mouseX, mouseY);
+        renderDurabilitySplitTooltip(ctx, mouseX, mouseY);
         // Dim happens inside renderColorPicker. Focused element is drawn AFTER the dim there.
 
         // Color picker popup
@@ -326,9 +422,11 @@ public class HudEditScreen extends Screen {
     }
 
     private void drawElement(DrawContext ctx, HudElement e, int mouseX, int mouseY) {
-        boolean hovered = e.hovered(mouseX, mouseY);
-        boolean focused = (e == colorEditTarget);
-        int border = focused ? 0xFFFFAA00 : (hovered || e.dragging) ? 0xFFFFFFFF : 0xFF888888;
+        boolean hovered = !isMouseOverWidgetToolbar(mouseX, mouseY) && e.hovered(mouseX, mouseY);
+        boolean focused = e == colorEditTarget;
+        boolean selected = e == selectedElement;
+        int border = focused ? 0xFFFFAA00 : selected ? 0xFF55FFFF
+                : (hovered || e.dragging) ? 0xFFFFFFFF : 0xFF888888;
         int sw = e.sw(), sh = e.sh();
 
         ctx.fill(e.x - 2, e.y - 2, e.x + sw + 2, e.y + sh + 2, 0xCC000000);
@@ -350,12 +448,35 @@ public class HudEditScreen extends Screen {
         }
 
         ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().translate(e.x + e.sw() / 2f, e.y + e.sh() / 2f);
+        ctx.getMatrices().translate(e.x, e.y);
         ctx.getMatrices().scale(e.scale, e.scale);
-        int tw = textRenderer.getWidth(e.preview);
-        int th = textRenderer.fontHeight;
-        ctx.drawText(textRenderer, e.preview, -tw / 2, -th / 2, textColor, true);
+        int lineStep = e.previewLines.size() > 1 ? 18 : textRenderer.fontHeight;
+        int textHeight = (e.previewLines.size() - 1) * lineStep + textRenderer.fontHeight;
+        int contentHeight = e.customH > 0 ? e.customH : H;
+        for (int line = 0; line < e.previewLines.size(); line++) {
+            Text preview = e.previewLines.get(line);
+            int tw = textRenderer.getWidth(preview);
+            int textX = switch (e.alignment) {
+                case LEFT -> e.alignedAnchor ? 0 : 3;
+                case RIGHT -> e.w - tw - (e.alignedAnchor ? 0 : 3);
+                default -> (e.w - tw) / 2;
+            };
+            if (e.durabilityColumn >= 0) {
+                drawDurabilityPreviewIcon(ctx, e.durabilityItems.get(line), textX, line * 18);
+            }
+            int lineColor = e.durabilityColumn >= 0
+                    && equippedDurabilityPreviewStack(e.durabilityItems.get(line)).isEmpty()
+                    ? darkenColor(textColor) : textColor;
+            ctx.drawText(textRenderer, preview, textX, (contentHeight - textHeight) / 2 + line * lineStep,
+                    lineColor, true);
+        }
         ctx.getMatrices().popMatrix();
+
+        int split = durabilitySplitAt(e, mouseX, mouseY);
+        if (hovered && e == topElementAt(mouseX, mouseY) && !e.dragging && split > 0) {
+            int splitY = e.y + Math.round(split * 18 * e.scale);
+            ctx.fill(e.x, splitY - 1, e.x + sw, splitY + 1, 0xFFFFAA00);
+        }
     }
 
     private int[] colorPickerBounds() {
@@ -669,18 +790,46 @@ public class HudEditScreen extends Screen {
             return true; // block other clicks while popup is open
         }
 
+        if (isMouseOverWidgetToolbar(mx, my) && click.button() != 0) return true;
         if (click.button() == 0) {
-            for (HudElement e : elements) {
-                if (e.hovered(mx, my)) {
-                    e.dragging = true;
-                    e.dragOffX = (int) mx - e.x;
-                    e.dragOffY = (int) my - e.y;
-                    return true;
-                }
+            WynnExtrasConfig.Align alignment = alignmentAt(mx, my);
+            if (alignment != null && selectedElement != null) {
+                selectedElement.alignment = alignment;
+                MinecraftUtils.playSoundUI(SoundEvents.UI_BUTTON_CLICK.value());
+                return true;
             }
+            WynnExtrasConfig.GrowDirection direction = growDirectionAt(mx, my);
+            if (direction != null && selectedElement != null) {
+                int anchorY = growthAnchorY(selectedElement);
+                selectedElement.growDirection = direction;
+                selectedElement.y = anchorY - growthOffset(selectedElement);
+                MinecraftUtils.playSoundUI(SoundEvents.UI_BUTTON_CLICK.value());
+                return true;
+            }
+            if (isMouseOverWidgetToolbar(mx, my)) return true;
+            HudElement e = topElementAt(mx, my);
+            if (e != null) {
+                int split = e == selectedElement ? durabilitySplitAt(e, mx, my) : -1;
+                selectedElement = e;
+                pressedElement = e;
+                pressedOverlapElements = elementsAt(mx, my);
+                pendingDurabilitySplit = split;
+                pressMouseX = mx;
+                pressMouseY = my;
+                dragMoved = false;
+                e.dragging = true;
+                e.dragOffX = (int) mx - e.x;
+                e.dragOffY = (int) my - e.y;
+                return true;
+            }
+            selectedElement = null;
+            pressedElement = null;
+            pressedOverlapElements = List.of();
+            pendingDurabilitySplit = -1;
         } else if (HUD_COLOR_EDITING_ENABLED && click.button() == 1) {
             // Right-click: open color picker for hovered element
-            for (HudElement e : elements) {
+            for (int i = elements.size() - 1; i >= 0; i--) {
+                HudElement e = elements.get(i);
                 if (e.hovered(mx, my)) {
                     colorEditTarget = e;
                     Integer existing = hudColorOverride(e.id);
@@ -693,8 +842,6 @@ public class HudEditScreen extends Screen {
         }
         return super.mouseClicked(click, doubleClick);
     }
-
-
     @Override
     public boolean mouseDragged(Click click, double dx, double dy) {
         double mx = click.x(), my = click.y();
@@ -711,31 +858,19 @@ public class HudEditScreen extends Screen {
         }
         for (HudElement e : elements) {
             if (e.dragging) {
+                if (!dragMoved && Math.hypot(mx - pressMouseX, my - pressMouseY) < 3) return true;
+                dragMoved = true;
+                pendingDurabilitySplit = -1;
                 int newX = Math.max(0, Math.min(width - e.sw(), (int) mx - e.dragOffX));
                 int newY = Math.max(0, Math.min(height - e.sh(), (int) my - e.dragOffY));
 
-                // Snap to horizontal center
-                int elemCenterX = newX + e.sw() / 2;
-                int screenCenterX = width / 2;
-                if (Math.abs(elemCenterX - screenCenterX) < SNAP_DIST) {
-                    newX = screenCenterX - e.sw() / 2;
-                    e.snappedX = true;
-                } else {
-                    e.snappedX = false;
-                }
-
-                // Snap to vertical center
-                int elemCenterY = newY + e.sh() / 2;
-                int screenCenterY = height / 2;
-                if (Math.abs(elemCenterY - screenCenterY) < SNAP_DIST) {
-                    newY = screenCenterY - e.sh() / 2;
-                    e.snappedY = true;
-                } else {
-                    e.snappedY = false;
-                }
+                int[] snapped = snapPosition(e, newX, newY);
+                newX = snapped[0];
+                newY = snapped[1];
 
                 e.x = newX;
                 e.y = newY;
+                updateDurabilityDock(e, mx, my);
                 return true;
             }
         }
@@ -744,15 +879,21 @@ public class HudEditScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
-        for (HudElement e : elements) {
-            if (e.hovered(mouseX, mouseY)) {
-                float newScale = e.scale + (float) verticalAmount * 0.1f;
-                e.scale = e.id.equals("treemap")
-                        ? TreeRoomMinimap.clampScale(newScale)
-                        : Math.max(0.5f, Math.min(4.0f, newScale));
-                e.scaleChanged = true;
-                return true;
+        if (isMouseOverWidgetToolbar(mouseX, mouseY)) return true;
+        HudElement e = topElementAt(mouseX, mouseY);
+        if (e != null) {
+            selectedElement = e;
+            float newScale = e.scale + (float) verticalAmount * 0.1f;
+            e.scale = e.id.equals("treemap")
+                    ? TreeRoomMinimap.clampScale(newScale)
+                    : Math.max(0.5f, Math.min(4.0f, newScale));
+            e.scaleChanged = true;
+            if (e.id.startsWith("durability:")) {
+                for (HudElement other : elements) {
+                    if (other.id.startsWith("durability:")) other.scale = e.scale;
+                }
             }
+            return true;
         }
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
     }
@@ -760,11 +901,52 @@ public class HudEditScreen extends Screen {
     @Override
     public boolean mouseReleased(Click click) {
         colorDragMode = 0;
+        HudElement draggedElement = elements.stream().filter(element -> element.dragging).findFirst().orElse(null);
+        if (draggedElement != null && Math.hypot(click.x() - pressMouseX, click.y() - pressMouseY) >= 3) {
+            dragMoved = true;
+            pendingDurabilitySplit = -1;
+        }
+        if (dragMoved && draggedElement != null && draggedElement.durabilityColumn >= 0 && dockTargetColumn >= 0) {
+            saveDurabilityElementPositions();
+            if (WynnExtrasConfig.INSTANCE.dockDurabilityColumn(
+                    draggedElement.durabilityColumn, dockTargetColumn, dockBeforeTarget)) {
+                rebuildDurabilityElements();
+                selectedElement = findDurabilityColumn(Math.min(draggedElement.durabilityColumn, dockTargetColumn));
+                MinecraftUtils.playSoundUI(SoundEvents.UI_BUTTON_CLICK.value());
+            }
+        } else if (!dragMoved && pressedElement != null && pendingDurabilitySplit > 0) {
+            saveDurabilityElementPositions();
+            WynnExtrasConfig config = WynnExtrasConfig.INSTANCE;
+            int sourceColumn = pressedElement.durabilityColumn;
+            int newColumnX = Math.min(width - 40, pressedElement.x + pressedElement.sw() + 16);
+            if (config.splitDurabilityColumn(sourceColumn, pendingDurabilitySplit)) {
+                rebuildDurabilityElements();
+                selectedElement = findDurabilityColumn(sourceColumn + 1);
+                if (selectedElement != null) {
+                    selectedElement.x = Math.clamp(newColumnX, 0, Math.max(0, width - selectedElement.sw()));
+                    selectedElement.y = pressedElement.y;
+                }
+                MinecraftUtils.playSoundUI(SoundEvents.UI_BUTTON_CLICK.value());
+            }
+        } else if (!dragMoved && pressedElement != null && pressedOverlapElements.size() > 1) {
+            int current = pressedOverlapElements.indexOf(pressedElement);
+            selectedElement = pressedOverlapElements.get((current + 1) % pressedOverlapElements.size());
+            MinecraftUtils.playSoundUI(SoundEvents.UI_BUTTON_CLICK.value());
+        }
         for (HudElement e : elements) {
             e.dragging = false;
             e.snappedX = false;
             e.snappedY = false;
         }
+        snapGuideX = -1;
+        snapGuideY = -1;
+        dockTargetColumn = -1;
+        dockGuideX = -1;
+        dockGuideY = -1;
+        pressedElement = null;
+        pressedOverlapElements = List.of();
+        pendingDurabilitySplit = -1;
+        dragMoved = false;
         return super.mouseReleased(click);
     }
 
@@ -789,26 +971,410 @@ public class HudEditScreen extends Screen {
             return true;
         }
 
-        boolean shift = (modifiers & 1) != 0;
-        if (shift && (keyCode == GLFW.GLFW_KEY_LEFT || keyCode == GLFW.GLFW_KEY_RIGHT || keyCode == GLFW.GLFW_KEY_A || keyCode == GLFW.GLFW_KEY_D)) { // Left arrow = 263, Right arrow = 262
-            for (HudElement e : elements) {
-                if (e.hovered(focusedMouseX, focusedMouseY)) {
-                    if (keyCode == GLFW.GLFW_KEY_LEFT || keyCode == GLFW.GLFW_KEY_A) { // left
-                        e.alignment = e.alignment == WynnExtrasConfig.Align.CENTER ? WynnExtrasConfig.Align.LEFT : e.alignment == WynnExtrasConfig.Align.RIGHT ? WynnExtrasConfig.Align.CENTER : WynnExtrasConfig.Align.LEFT;
-                    } else { // right
-                        e.alignment = e.alignment == WynnExtrasConfig.Align.CENTER ? WynnExtrasConfig.Align.RIGHT : e.alignment == WynnExtrasConfig.Align.LEFT ? WynnExtrasConfig.Align.CENTER : WynnExtrasConfig.Align.RIGHT;
-                    }
-                    return true;
+        boolean shift = (modifiers & GLFW.GLFW_MOD_SHIFT) != 0;
+        if (selectedElement != null && (keyCode == GLFW.GLFW_KEY_LEFT || keyCode == GLFW.GLFW_KEY_RIGHT
+                || keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_DOWN)) {
+            int amount = shift ? 10 : 1;
+            if (keyCode == GLFW.GLFW_KEY_LEFT) selectedElement.x -= amount;
+            if (keyCode == GLFW.GLFW_KEY_RIGHT) selectedElement.x += amount;
+            if (keyCode == GLFW.GLFW_KEY_UP) selectedElement.y -= amount;
+            if (keyCode == GLFW.GLFW_KEY_DOWN) selectedElement.y += amount;
+            selectedElement.x = Math.clamp(selectedElement.x, 0, Math.max(0, width - selectedElement.sw()));
+            selectedElement.y = Math.clamp(selectedElement.y, 0, Math.max(0, height - selectedElement.sh()));
+            return true;
+        }
+        if (selectedElement != null && keyCode == GLFW.GLFW_KEY_R) {
+            selectedElement.x = selectedElement.initialX;
+            selectedElement.y = selectedElement.initialY;
+            selectedElement.scale = selectedElement.initialScale;
+            if (selectedElement.durabilityColumn >= 0) {
+                for (HudElement element : elements) {
+                    if (element.durabilityColumn >= 0) element.scale = selectedElement.scale;
                 }
             }
+            return true;
         }
         return super.keyPressed(input);
+    }
+
+    private HudElement topElementAt(double mouseX, double mouseY) {
+        if (selectedElement != null && selectedElement.hovered(mouseX, mouseY)) return selectedElement;
+        for (int i = elements.size() - 1; i >= 0; i--) {
+            HudElement element = elements.get(i);
+            if (element.hovered(mouseX, mouseY)) return element;
+        }
+        return null;
+    }
+
+    private List<HudElement> elementsAt(double mouseX, double mouseY) {
+        List<HudElement> result = new ArrayList<>();
+        for (int i = elements.size() - 1; i >= 0; i--) {
+            HudElement element = elements.get(i);
+            if (element.hovered(mouseX, mouseY)) result.add(element);
+        }
+        return result;
+    }
+
+    private void renderOverlapHint(DrawContext context, int mouseX, int mouseY) {
+        if (elements.stream().anyMatch(element -> element.dragging)) return;
+        if (isMouseOverWidgetToolbar(mouseX, mouseY)) return;
+        if (selectedElement != null && durabilitySplitAt(selectedElement, mouseX, mouseY) > 0) return;
+        List<HudElement> hovered = elementsAt(mouseX, mouseY);
+        if (hovered.size() < 2) return;
+        String text = hovered.size() + " overlapping! Click to cycle";
+        int hintW = textRenderer.getWidth(text) + 10;
+        int x = Math.clamp(mouseX + 8, 4, Math.max(4, width - hintW - 4));
+        int y = Math.clamp(mouseY + 8, 4, Math.max(4, height - 17));
+        context.fill(x, y, x + hintW, y + 13, 0xDD111111);
+        context.drawTextWithShadow(textRenderer, text, x + 5, y + 2, 0xFFAAAAAA);
+    }
+
+    private void renderDurabilitySplitTooltip(DrawContext context, int mouseX, int mouseY) {
+        if (selectedElement == null || selectedElement.dragging
+                || durabilitySplitAt(selectedElement, mouseX, mouseY) <= 0) return;
+        context.drawTooltip(Text.literal("Click to split the rows below into a new column"), mouseX, mouseY);
+    }
+
+    private boolean supportsAlignment(HudElement element) {
+        return element != null && ("consumables".equals(element.id) || element.durabilityColumn >= 0);
+    }
+
+    private void renderWidgetToolbar(DrawContext context, HudElement element, int mouseX, int mouseY) {
+        int[] toolbar = widgetToolbarBounds(element);
+        drawToolbarGroup(context, toolbar[0], toolbar[1], 122, "Allignment");
+        drawToolbarGroup(context, toolbar[0] + 126, toolbar[1], 84, "Direction");
+        WynnExtrasConfig.Align[] alignments = WynnExtrasConfig.Align.values();
+        for (int i = 0; i < alignments.length; i++) {
+            int[] bounds = widgetToolbarButtonBounds(element, i);
+            boolean hovered = mouseX >= bounds[0] && mouseX < bounds[0] + bounds[2]
+                    && mouseY >= bounds[1] && mouseY < bounds[1] + bounds[3];
+            int color = element.alignment == alignments[i] ? 0xFF267080 : hovered ? 0xFF3A3A3A : 0xFF252525;
+            context.fill(bounds[0], bounds[1], bounds[0] + bounds[2], bounds[1] + bounds[3], color);
+            context.drawCenteredTextWithShadow(textRenderer, alignments[i].toString(),
+                    bounds[0] + bounds[2] / 2, bounds[1] + 2, 0xFFFFFFFF);
+        }
+        WynnExtrasConfig.GrowDirection[] directions = {
+                WynnExtrasConfig.GrowDirection.UP, WynnExtrasConfig.GrowDirection.DOWN};
+        for (int i = 0; i < directions.length; i++) {
+            int[] bounds = widgetToolbarButtonBounds(element, i + 3);
+            boolean hovered = mouseX >= bounds[0] && mouseX < bounds[0] + bounds[2]
+                    && mouseY >= bounds[1] && mouseY < bounds[1] + bounds[3];
+            int color = element.growDirection == directions[i] ? 0xFF806026 : hovered ? 0xFF3A3A3A : 0xFF252525;
+            context.fill(bounds[0], bounds[1], bounds[0] + bounds[2], bounds[1] + bounds[3], color);
+            context.drawCenteredTextWithShadow(textRenderer, directions[i].toString(),
+                    bounds[0] + bounds[2] / 2, bounds[1] + 2, 0xFFFFFFFF);
+        }
+    }
+
+    private WynnExtrasConfig.Align alignmentAt(double mouseX, double mouseY) {
+        if (!supportsAlignment(selectedElement)) return null;
+        WynnExtrasConfig.Align[] alignments = WynnExtrasConfig.Align.values();
+        for (int i = 0; i < alignments.length; i++) {
+            int[] bounds = widgetToolbarButtonBounds(selectedElement, i);
+            if (mouseX >= bounds[0] && mouseX < bounds[0] + bounds[2]
+                    && mouseY >= bounds[1] && mouseY < bounds[1] + bounds[3]) return alignments[i];
+        }
+        return null;
+    }
+
+    private WynnExtrasConfig.GrowDirection growDirectionAt(double mouseX, double mouseY) {
+        if (!supportsAlignment(selectedElement)) return null;
+        WynnExtrasConfig.GrowDirection[] directions = {
+                WynnExtrasConfig.GrowDirection.UP, WynnExtrasConfig.GrowDirection.DOWN};
+        for (int i = 0; i < directions.length; i++) {
+            int[] bounds = widgetToolbarButtonBounds(selectedElement, i + 3);
+            if (mouseX >= bounds[0] && mouseX < bounds[0] + bounds[2]
+                    && mouseY >= bounds[1] && mouseY < bounds[1] + bounds[3]) return directions[i];
+        }
+        return null;
+    }
+
+    private int[] widgetToolbarButtonBounds(HudElement element, int index) {
+        int buttonW = 38;
+        int gap = 2;
+        int[] toolbar = widgetToolbarBounds(element);
+        int buttonX = index < 3
+                ? toolbar[0] + 3 + index * (buttonW + gap)
+                : toolbar[0] + 129 + (index - 3) * (buttonW + gap);
+        return new int[]{buttonX, toolbar[1] + 13, buttonW, 16};
+    }
+
+    private int[] widgetToolbarBounds(HudElement element) {
+        int toolbarW = 210;
+        int toolbarH = 32;
+        int toolbarX = Math.clamp(element.x + element.sw() / 2 - toolbarW / 2,
+                4, Math.max(4, width - toolbarW - 4));
+        int toolbarY = element.y - toolbarH - 4 >= 4
+                ? element.y - toolbarH - 4
+                : Math.min(height - toolbarH - 4, element.y + element.sh() + 4);
+        return new int[]{toolbarX, toolbarY, toolbarW, toolbarH};
+    }
+
+    private boolean isMouseOverWidgetToolbar(double mouseX, double mouseY) {
+        if (!supportsAlignment(selectedElement)) return false;
+        int[] bounds = widgetToolbarBounds(selectedElement);
+        return mouseX >= bounds[0] && mouseX < bounds[0] + bounds[2]
+                && mouseY >= bounds[1] && mouseY < bounds[1] + bounds[3];
+    }
+
+    private void drawToolbarGroup(DrawContext context, int x, int y, int w, String label) {
+        context.fill(x, y, x + w, y + 32, 0xDD111111);
+        context.fill(x, y, x + w, y + 1, 0xFF777777);
+        context.fill(x, y + 31, x + w, y + 32, 0xFF777777);
+        context.fill(x, y, x + 1, y + 32, 0xFF777777);
+        context.fill(x + w - 1, y, x + w, y + 32, 0xFF777777);
+        context.drawCenteredTextWithShadow(textRenderer, label, x + w / 2, y + 2, 0xFFBBBBBB);
+    }
+
+    private int[] snapPosition(HudElement element, int x, int y) {
+        int snappedX = x;
+        int snappedY = y;
+        snapGuideX = -1;
+        snapGuideY = -1;
+        int centerX = x + element.sw() / 2;
+        int centerY = y + element.sh() / 2;
+        if (Math.abs(centerX - width / 2) < SNAP_DIST) {
+            snappedX = width / 2 - element.sw() / 2;
+            snapGuideX = width / 2;
+        }
+        if (Math.abs(centerY - height / 2) < SNAP_DIST) {
+            snappedY = height / 2 - element.sh() / 2;
+            snapGuideY = height / 2;
+        }
+        element.snappedX = snapGuideX >= 0;
+        element.snappedY = snapGuideY >= 0;
+        return new int[]{Math.clamp(snappedX, 0, Math.max(0, width - element.sw())),
+                Math.clamp(snappedY, 0, Math.max(0, height - element.sh()))};
+    }
+
+    private void rememberInitialState(HudElement element) {
+        if (element.initialStateSet) return;
+        element.initialX = element.x;
+        element.initialY = element.y;
+        element.initialScale = element.scale;
+        element.initialStateSet = true;
+    }
+
+    private String displayName(HudElement element) {
+        if (element.durabilityColumn >= 0) return "Durability column " + (element.durabilityColumn + 1);
+        String id = element.id.replaceAll("([a-z])([A-Z])", "$1 $2");
+        return Character.toUpperCase(id.charAt(0)) + id.substring(1);
+    }
+
+    private String durabilityPreviewText(WynnExtrasConfig.DurabilityFormat format, int row) {
+        int[] currentValues = {350, 82, 9, 275, 41, 63, 7, 188, 24};
+        int[] maximumValues = {350, 120, 52, 310, 98, 84, 65, 240, 110};
+        int current = currentValues[row % currentValues.length];
+        int maximum = maximumValues[row % maximumValues.length];
+        int percentage = current * 100 / maximum;
+        return switch (format) {
+            case RAW -> current + "/" + maximum;
+            case PERCENT -> percentage + "%";
+            case BOTH -> current + "/" + maximum + " (" + percentage + "%)";
+        };
+    }
+
+    private void drawDurabilityPreviewIcon(DrawContext context, String itemId, int x, int y) {
+        ItemStack equipped = equippedDurabilityPreviewStack(itemId);
+        if (!equipped.isEmpty()) {
+            context.drawItem(equipped, x, y);
+            return;
+        }
+
+        Identifier texture = durabilityPlaceholderTexture(itemId);
+        context.drawTexture(RenderPipelines.GUI_TEXTURED, texture,
+                x, y, 0, 0, 16, 16, 16, 16, 16, 16, 0xFF666666);
+    }
+
+    private ItemStack equippedDurabilityPreviewStack(String itemId) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return ItemStack.EMPTY;
+        ItemStack stack = switch (itemId) {
+            case WynnExtrasConfig.DURABILITY_ITEM_WEAPON -> client.player.getMainHandStack();
+            case WynnExtrasConfig.DURABILITY_ITEM_HELMET -> client.player.getEquippedStack(EquipmentSlot.HEAD);
+            case WynnExtrasConfig.DURABILITY_ITEM_CHESTPLATE -> client.player.getEquippedStack(EquipmentSlot.CHEST);
+            case WynnExtrasConfig.DURABILITY_ITEM_LEGGINGS -> client.player.getEquippedStack(EquipmentSlot.LEGS);
+            case WynnExtrasConfig.DURABILITY_ITEM_BOOTS -> client.player.getEquippedStack(EquipmentSlot.FEET);
+            case WynnExtrasConfig.DURABILITY_ITEM_RING_1 -> client.player.getInventory().getStack(9);
+            case WynnExtrasConfig.DURABILITY_ITEM_RING_2 -> client.player.getInventory().getStack(10);
+            case WynnExtrasConfig.DURABILITY_ITEM_BRACELET -> client.player.getInventory().getStack(11);
+            case WynnExtrasConfig.DURABILITY_ITEM_NECKLACE -> client.player.getInventory().getStack(12);
+            default -> ItemStack.EMPTY;
+        };
+        return WynnItemParser.parse(stack).flatMap(item -> item.durability()).isPresent()
+                ? stack : ItemStack.EMPTY;
+    }
+
+    private Identifier durabilityPlaceholderTexture(String itemId) {
+        return switch (itemId) {
+            case WynnExtrasConfig.DURABILITY_ITEM_WEAPON -> Identifier.ofVanilla("textures/item/bow.png");
+            case WynnExtrasConfig.DURABILITY_ITEM_HELMET -> Identifier.ofVanilla("textures/item/diamond_helmet.png");
+            case WynnExtrasConfig.DURABILITY_ITEM_CHESTPLATE -> Identifier.ofVanilla("textures/item/diamond_chestplate.png");
+            case WynnExtrasConfig.DURABILITY_ITEM_LEGGINGS -> Identifier.ofVanilla("textures/item/diamond_leggings.png");
+            case WynnExtrasConfig.DURABILITY_ITEM_BOOTS -> Identifier.ofVanilla("textures/item/diamond_boots.png");
+            case WynnExtrasConfig.DURABILITY_ITEM_RING_1, WynnExtrasConfig.DURABILITY_ITEM_RING_2 ->
+                    Identifier.ofVanilla("textures/wynn/gui/slot/ring.png");
+            case WynnExtrasConfig.DURABILITY_ITEM_BRACELET ->
+                    Identifier.ofVanilla("textures/wynn/gui/slot/bracelet.png");
+            case WynnExtrasConfig.DURABILITY_ITEM_NECKLACE ->
+                    Identifier.ofVanilla("textures/wynn/gui/slot/necklace.png");
+            default -> Identifier.ofVanilla("textures/item/barrier.png");
+        };
+    }
+
+    private int darkenColor(int color) {
+        int red = (color >> 16 & 0xFF) * 2 / 5;
+        int green = (color >> 8 & 0xFF) * 2 / 5;
+        int blue = (color & 0xFF) * 2 / 5;
+        return color & 0xFF000000 | red << 16 | green << 8 | blue;
+    }
+
+    private HudElement findDurabilityColumn(int column) {
+        return elements.stream()
+                .filter(element -> element.durabilityColumn == column)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private boolean canSplitDurabilityColumn() {
+        if (WynnExtrasConfig.INSTANCE.getDurabilityColumnCount() >= 3) return false;
+        return elements.stream().anyMatch(element -> element.durabilityItems.size() > 1);
+    }
+
+    private int durabilitySplitAt(HudElement element, double mouseX, double mouseY) {
+        if (element != selectedElement || element.durabilityColumn < 0 || !canSplitDurabilityColumn()) return -1;
+        if (mouseX < element.x || mouseX >= element.x + element.sw()) return -1;
+        for (int split = 1; split < element.durabilityItems.size(); split++) {
+            int splitY = element.y + Math.round(split * 18 * element.scale);
+            if (Math.abs(mouseY - splitY) <= 4) return split;
+        }
+        return -1;
+    }
+
+    private void updateDurabilityDock(HudElement dragged, double mouseX, double mouseY) {
+        dockTargetColumn = -1;
+        dockGuideX = -1;
+        dockGuideY = -1;
+        if (dragged.durabilityColumn < 0) return;
+
+        HudElement cursorTarget = null;
+        boolean cursorBefore = false;
+        int cursorDistance = DOCK_DIST + 1;
+        for (HudElement target : elements) {
+            if (target == dragged || target.durabilityColumn < 0
+                    || mouseX < target.x || mouseX >= target.x + target.sw()) continue;
+            int topDistance = (int) Math.abs(mouseY - target.y);
+            if (topDistance < cursorDistance) {
+                cursorDistance = topDistance;
+                cursorTarget = target;
+                cursorBefore = true;
+            }
+            int bottomDistance = (int) Math.abs(mouseY - (target.y + target.sh()));
+            if (bottomDistance < cursorDistance) {
+                cursorDistance = bottomDistance;
+                cursorTarget = target;
+                cursorBefore = false;
+            }
+        }
+        if (cursorTarget != null && cursorDistance <= DOCK_DIST) {
+            setDurabilityDockTarget(cursorTarget, cursorBefore);
+            return;
+        }
+
+        int bestDistance = DOCK_DIST + 1;
+        HudElement elementTarget = null;
+        boolean elementBefore = false;
+        for (HudElement target : elements) {
+            if (target == dragged || target.durabilityColumn < 0) continue;
+            int overlap = Math.min(dragged.x + dragged.sw(), target.x + target.sw())
+                    - Math.max(dragged.x, target.x);
+            if (overlap < Math.min(dragged.sw(), target.sw()) / 3) continue;
+
+            int aboveDistance = Math.abs(dragged.y + dragged.sh() - target.y);
+            if (aboveDistance < bestDistance) {
+                bestDistance = aboveDistance;
+                elementTarget = target;
+                elementBefore = true;
+            }
+            int belowDistance = Math.abs(dragged.y - (target.y + target.sh()));
+            if (belowDistance < bestDistance) {
+                bestDistance = belowDistance;
+                elementTarget = target;
+                elementBefore = false;
+            }
+        }
+        if (elementTarget != null && bestDistance <= DOCK_DIST) {
+            setDurabilityDockTarget(elementTarget, elementBefore);
+        }
+    }
+
+    private void setDurabilityDockTarget(HudElement target, boolean beforeTarget) {
+        dockTargetColumn = target.durabilityColumn;
+        dockBeforeTarget = beforeTarget;
+        dockGuideX = target.x;
+        dockGuideW = target.sw();
+        dockGuideY = beforeTarget ? target.y : target.y + target.sh();
+    }
+
+    private int alignmentOffset(HudElement element) {
+        return switch (element.alignment) {
+            case CENTER -> element.sw() / 2;
+            case RIGHT -> element.sw();
+            default -> 0;
+        };
+    }
+
+    private int alignmentAnchorX(HudElement element) {
+        return element.x + alignmentOffset(element);
+    }
+
+    private int growthOffset(HudElement element) {
+        if (element.growDirection != WynnExtrasConfig.GrowDirection.UP || element.durabilityItems.size() < 2) {
+            return 0;
+        }
+        return Math.round((element.durabilityItems.size() - 1) * 18 * element.scale);
+    }
+
+    private int growthAnchorY(HudElement element) {
+        return element.y + growthOffset(element);
+    }
+
+    private void saveDurabilityElementPositions() {
+        WynnExtrasConfig config = WynnExtrasConfig.INSTANCE;
+        for (HudElement element : elements) {
+            if (element.durabilityColumn < 0) continue;
+            config.setDurabilityHudColumnPosition(
+                    element.durabilityColumn, alignmentAnchorX(element), growthAnchorY(element));
+            config.durabilityHudScale = element.scale;
+        }
+    }
+
+    private void rebuildDurabilityElements() {
+        elements.removeIf(element -> element.durabilityColumn >= 0);
+        addDurabilityElements(WynnExtrasConfig.INSTANCE);
+        for (HudElement element : elements) {
+            if (element.durabilityColumn < 0) continue;
+            element.w = element.previewLines.stream().mapToInt(textRenderer::getWidth).max().orElse(1);
+            if (element.alignedAnchor) element.x -= alignmentOffset(element);
+            if (element.alignedAnchor) element.y -= growthOffset(element);
+            element.x = Math.max(4, Math.min(width - element.sw() - 4, element.x));
+            element.y = Math.max(4, Math.min(height - element.sh() - 4, element.y));
+            rememberInitialState(element);
+        }
     }
 
     @Override
     public void close() {
         WynnExtrasConfig c = WynnExtrasConfig.INSTANCE;
         for (HudElement e : elements) {
+            if (e.id.startsWith("durability:")) {
+                int column = Integer.parseInt(e.id.substring("durability:".length()));
+                c.setDurabilityHudColumnPosition(column, alignmentAnchorX(e), growthAnchorY(e));
+                c.durabilityHudScale = e.scale;
+                c.setDurabilityHudColumnAlignment(column, e.alignment);
+                c.setDurabilityHudColumnGrowDirection(column, e.growDirection);
+                continue;
+            }
             switch (e.id) {
                 case "provoke" -> {
                     c.provokeTimerX = e.x + e.sw() / 2; c.provokeTimerY = e.y + e.sh() / 2; c.provokeTimerScale = e.scale; c.provokeTimerAlignment = e.alignment;
@@ -826,10 +1392,15 @@ public class HudEditScreen extends Screen {
                     c.totemWarningX = e.x + e.sw() / 2; c.totemWarningY = e.y + e.sh() / 2; c.totemWarningScale = e.scale; c.totemWarningAlignment = e.alignment;
                 }
                 case "consumables" -> {
-                    c.consumableTimersX = e.x; c.consumableTimersY = e.y; c.consumableTimersScale = e.scale;
+                    c.consumableTimersX = alignmentAnchorX(e); c.consumableTimersY = growthAnchorY(e); c.consumableTimersScale = e.scale;
+                    c.consumableTimersAlignment = e.alignment;
+                    c.consumableGrowDirection = e.growDirection;
                 }
-                case "durability" -> {
-                    c.durabilityHudX = e.x; c.durabilityHudY = e.y; c.durabilityHudScale = e.scale;
+                case "durabilityWarning" -> {
+                    c.durabilityWarnHudX = e.x + e.sw() / 2; c.durabilityWarnHudY = e.y; c.durabilityWarnHudScale = e.scale;
+                }
+                case "consumableWarning" -> {
+                    c.consumableWarnHudX = e.x + e.sw() / 2; c.consumableWarnHudY = e.y; c.consumableWarnHudScale = e.scale;
                 }
                 case "radiant" -> {
                     c.radiantHudX = e.x; c.radiantHudY = e.y; c.radiantHudScale = e.scale;

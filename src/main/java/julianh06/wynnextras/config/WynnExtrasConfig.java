@@ -15,10 +15,36 @@ import java.nio.file.Path;
 import java.util.*;
 
 public class WynnExtrasConfig {
-    public enum Align { LEFT, CENTER, RIGHT }
+    public enum Align {
+        LEFT("Left"), CENTER("Center"), RIGHT("Right");
+
+        private final String displayName;
+
+        Align(String displayName) {
+            this.displayName = displayName;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
+        }
+    }
     public enum DurabilityFormat { RAW, PERCENT, BOTH }
     public enum ConsumableSort { DRINK_ORDER, TIME_LEFT }
-    public enum GrowDirection { DOWN, UP }
+    public enum GrowDirection {
+        DOWN("Down"), UP("Up");
+
+        private final String displayName;
+
+        GrowDirection(String displayName) {
+            this.displayName = displayName;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
+        }
+    }
     public enum TelemetryMode {
         ON("On"),
         ANONYMIZE("Anonymize"),
@@ -293,6 +319,31 @@ public class WynnExtrasConfig {
             TOTEM_TIMER_EFFECT_ELDRITCH_TRANSFUSION,
             TOTEM_TIMER_EFFECT_INVIGORATING_WAVE);
     public static final Map<String, String> TOTEM_TIMER_EFFECT_NAMES = createTotemTimerEffectNames();
+
+    public static final String DURABILITY_ITEM_WEAPON = "weapon";
+    public static final String DURABILITY_ITEM_HELMET = "helmet";
+    public static final String DURABILITY_ITEM_CHESTPLATE = "chestplate";
+    public static final String DURABILITY_ITEM_LEGGINGS = "leggings";
+    public static final String DURABILITY_ITEM_BOOTS = "boots";
+    public static final String DURABILITY_ITEM_RING_1 = "ring_1";
+    public static final String DURABILITY_ITEM_RING_2 = "ring_2";
+    public static final String DURABILITY_ITEM_BRACELET = "bracelet";
+    public static final String DURABILITY_ITEM_NECKLACE = "necklace";
+    public static final String DURABILITY_COLUMN_2 = "column_2";
+    public static final String DURABILITY_COLUMN_3 = "column_3";
+    public static final List<String> DURABILITY_ITEM_IDS = List.of(
+            DURABILITY_ITEM_WEAPON,
+            DURABILITY_ITEM_HELMET,
+            DURABILITY_ITEM_CHESTPLATE,
+            DURABILITY_ITEM_LEGGINGS,
+            DURABILITY_ITEM_BOOTS,
+            DURABILITY_ITEM_RING_1,
+            DURABILITY_ITEM_RING_2,
+            DURABILITY_ITEM_BRACELET,
+            DURABILITY_ITEM_NECKLACE,
+            DURABILITY_COLUMN_2,
+            DURABILITY_COLUMN_3);
+    public static final Map<String, String> DURABILITY_ITEM_NAMES = createDurabilityItemNames();
 
     private static final Path CONFIG_PATH = FabricLoader.getInstance()
             .getConfigDir()
@@ -692,13 +743,29 @@ public class WynnExtrasConfig {
     public boolean durabilityWarnToggle = true;
     public boolean durabilityWarnChat = true;
     public boolean durabilityWarnPopup = true;
-    public boolean durabilityWarnSound = true;
+    public boolean durabilityWarnSound = false;
     public boolean durabilityBrokenToggle = true;
     public boolean durabilityBrokenPersistent = false;
     public int durabilityWarnPercent = 10;
+    public int durabilityWarnHudX = -1;
+    public int durabilityWarnHudY = 55;
+    public float durabilityWarnHudScale = 1.0f;
     public int durabilityHudX = 5;
     public int durabilityHudY = 100;
+    public int durabilityHudColumn2X = 125;
+    public int durabilityHudColumn2Y = 100;
+    public int durabilityHudColumn3X = 245;
+    public int durabilityHudColumn3Y = 100;
     public float durabilityHudScale = 1.0f;
+    public Align durabilityHudAlignment = Align.LEFT;
+    public Align durabilityHudColumn2Alignment;
+    public Align durabilityHudColumn3Alignment;
+    public GrowDirection durabilityHudGrowDirection = GrowDirection.DOWN;
+    public GrowDirection durabilityHudColumn2GrowDirection;
+    public GrowDirection durabilityHudColumn3GrowDirection;
+    public List<List<String>> durabilityItemColumns;
+    public List<String> durabilityActiveItems = new ArrayList<>(List.of(DURABILITY_ITEM_WEAPON));
+    public List<String> durabilityAvailableItems = new ArrayList<>(DURABILITY_ITEM_IDS.subList(1, DURABILITY_ITEM_IDS.size()));
 
     //==================== CONSUMABLE TIMERS HUD ====================
     public boolean consumableTimersToggle = false;
@@ -707,7 +774,6 @@ public class WynnExtrasConfig {
     public boolean consumableShowScrolls = true;
     public boolean consumableShowEffectName = false;
     public boolean consumableHideNoTimer = false;
-    public boolean consumableCompact = false;
     public boolean consumableHideInMenus = false;
     public ConsumableSort consumableSortMode = ConsumableSort.DRINK_ORDER;
     public GrowDirection consumableGrowDirection = GrowDirection.DOWN;
@@ -718,9 +784,13 @@ public class WynnExtrasConfig {
     public boolean consumableWarnSound = false;
     public boolean consumableWarnPopup = false;
     public int consumableWarnSeconds = 30;
+    public int consumableWarnHudX = -1;
+    public int consumableWarnHudY = 40;
+    public float consumableWarnHudScale = 1.0f;
     public int consumableTimersX = 5;
     public int consumableTimersY = 120;
     public float consumableTimersScale = 1.0f;
+    public Align consumableTimersAlignment = Align.LEFT;
     public int customGUIScale = 3;
     public boolean removeFrontPersonView = false;
     public boolean identifierCaseOpening = false;
@@ -976,6 +1046,22 @@ public class WynnExtrasConfig {
         INSTANCE.syncTetrisSettings();
         INSTANCE.syncClassSelectionLines();
         INSTANCE.syncTotemTimerEffects();
+        INSTANCE.syncDurabilityItems();
+        if (INSTANCE.durabilityHudAlignment == null) INSTANCE.durabilityHudAlignment = Align.LEFT;
+        if (INSTANCE.durabilityHudColumn2Alignment == null) {
+            INSTANCE.durabilityHudColumn2Alignment = INSTANCE.durabilityHudAlignment;
+        }
+        if (INSTANCE.durabilityHudColumn3Alignment == null) {
+            INSTANCE.durabilityHudColumn3Alignment = INSTANCE.durabilityHudAlignment;
+        }
+        if (INSTANCE.durabilityHudGrowDirection == null) INSTANCE.durabilityHudGrowDirection = GrowDirection.DOWN;
+        if (INSTANCE.durabilityHudColumn2GrowDirection == null) {
+            INSTANCE.durabilityHudColumn2GrowDirection = INSTANCE.durabilityHudGrowDirection;
+        }
+        if (INSTANCE.durabilityHudColumn3GrowDirection == null) {
+            INSTANCE.durabilityHudColumn3GrowDirection = INSTANCE.durabilityHudGrowDirection;
+        }
+        if (INSTANCE.consumableTimersAlignment == null) INSTANCE.consumableTimersAlignment = Align.LEFT;
         INSTANCE.syncShoppingListPositions();
         if (INSTANCE.mythicScaleSource == null) INSTANCE.mythicScaleSource = MythicScaleSource.WYNNPOOL;
         if (INSTANCE.classSelectionContentProgressStyle == null) {
@@ -1090,6 +1176,280 @@ public class WynnExtrasConfig {
         names.put(TOTEM_TIMER_EFFECT_ELDRITCH_TRANSFUSION, "Eldritch Transfusion");
         names.put(TOTEM_TIMER_EFFECT_INVIGORATING_WAVE, "Invigorating Wave");
         return Collections.unmodifiableMap(names);
+    }
+
+    private static Map<String, String> createDurabilityItemNames() {
+        LinkedHashMap<String, String> names = new LinkedHashMap<>();
+        names.put(DURABILITY_ITEM_WEAPON, "Weapon/Tool");
+        names.put(DURABILITY_ITEM_HELMET, "Helmet");
+        names.put(DURABILITY_ITEM_CHESTPLATE, "Chestplate");
+        names.put(DURABILITY_ITEM_LEGGINGS, "Leggings");
+        names.put(DURABILITY_ITEM_BOOTS, "Boots");
+        names.put(DURABILITY_ITEM_RING_1, "Ring 1");
+        names.put(DURABILITY_ITEM_RING_2, "Ring 2");
+        names.put(DURABILITY_ITEM_BRACELET, "Bracelet");
+        names.put(DURABILITY_ITEM_NECKLACE, "Necklace");
+        names.put(DURABILITY_COLUMN_2, "──── New column ────");
+        names.put(DURABILITY_COLUMN_3, "──── New column ────");
+        return Collections.unmodifiableMap(names);
+    }
+
+    public List<List<String>> getDurabilityItemColumns() {
+        if (durabilityItemColumns == null) syncDurabilityItems();
+        List<List<String>> columns = durabilityItemColumns.stream()
+                .map(ArrayList::new)
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        while (columns.size() < 3) columns.add(new ArrayList<>());
+        return columns;
+    }
+
+    public List<String> getHiddenDurabilityItems() {
+        if (durabilityAvailableItems == null) syncDurabilityItems();
+        return durabilityAvailableItems.stream()
+                .filter(id -> !DURABILITY_COLUMN_2.equals(id) && !DURABILITY_COLUMN_3.equals(id))
+                .toList();
+    }
+
+    public int getDurabilityColumnCount() {
+        if (durabilityItemColumns == null) syncDurabilityItems();
+        return durabilityItemColumns.size();
+    }
+
+    public void setDurabilityItemLayout(List<List<String>> columns, List<String> hiddenItems) {
+        List<String> active = new ArrayList<>();
+        Set<String> used = new HashSet<>();
+        int lastColumn = 0;
+        for (int column = 0; column < Math.min(3, columns.size()); column++) {
+            if (!columns.get(column).isEmpty()) lastColumn = column;
+        }
+        for (int column = 0; column <= lastColumn; column++) {
+            if (column == 1) active.add(DURABILITY_COLUMN_2);
+            if (column == 2) active.add(DURABILITY_COLUMN_3);
+            for (String id : columns.get(column)) {
+                if (isDurabilityEquipmentId(id) && used.add(id)) active.add(id);
+            }
+        }
+
+        List<String> hidden = new ArrayList<>();
+        for (String id : hiddenItems) {
+            if (isDurabilityEquipmentId(id) && used.add(id)) hidden.add(id);
+        }
+        for (String id : DURABILITY_ITEM_IDS) {
+            if (isDurabilityEquipmentId(id) && used.add(id)) hidden.add(id);
+        }
+        durabilityItemColumns = new ArrayList<>();
+        for (int column = 0; column <= lastColumn; column++) {
+            durabilityItemColumns.add(new ArrayList<>(columns.get(column)));
+        }
+        durabilityActiveItems = active;
+        durabilityAvailableItems = hidden;
+        syncDurabilityItems();
+    }
+
+    public boolean splitDurabilityColumn(int column, int afterItems) {
+        int columnCount = getDurabilityColumnCount();
+        List<List<String>> columns = getDurabilityItemColumns().stream()
+                .map(ArrayList::new)
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (column < 0 || column >= columnCount || columnCount >= 3) return false;
+        List<String> source = columns.get(column);
+        if (afterItems <= 0 || afterItems >= source.size()) return false;
+
+        List<String> split = new ArrayList<>(source.subList(afterItems, source.size()));
+        source.subList(afterItems, source.size()).clear();
+        columns.add(column + 1, split);
+        if (columns.size() > 3) columns.removeLast();
+
+        for (int target = Math.min(2, columnCount); target > column + 1; target--) {
+            setDurabilityHudColumnPosition(target,
+                    getDurabilityHudColumnX(target - 1), getDurabilityHudColumnY(target - 1));
+            setDurabilityHudColumnAlignment(target, getDurabilityHudColumnAlignment(target - 1));
+            setDurabilityHudColumnGrowDirection(target, getDurabilityHudColumnGrowDirection(target - 1));
+        }
+        setDurabilityHudColumnPosition(column + 1,
+                getDurabilityHudColumnX(column) + 120, getDurabilityHudColumnY(column));
+        setDurabilityHudColumnAlignment(column + 1, getDurabilityHudColumnAlignment(column));
+        setDurabilityHudColumnGrowDirection(column + 1, getDurabilityHudColumnGrowDirection(column));
+        setDurabilityItemLayout(columns, getHiddenDurabilityItems());
+        return true;
+    }
+
+    public boolean dockDurabilityColumn(int sourceColumn, int targetColumn, boolean beforeTarget) {
+        int columnCount = getDurabilityColumnCount();
+        if (sourceColumn < 0 || sourceColumn >= columnCount || targetColumn < 0
+                || targetColumn >= columnCount || sourceColumn == targetColumn) return false;
+
+        List<List<String>> columns = getDurabilityItemColumns();
+        List<String> merged = new ArrayList<>();
+        if (beforeTarget) merged.addAll(columns.get(sourceColumn));
+        merged.addAll(columns.get(targetColumn));
+        if (!beforeTarget) merged.addAll(columns.get(sourceColumn));
+
+        int mergedIndex = Math.min(sourceColumn, targetColumn);
+        List<List<String>> result = new ArrayList<>();
+        List<int[]> positions = new ArrayList<>();
+        List<Align> alignments = new ArrayList<>();
+        List<GrowDirection> growDirections = new ArrayList<>();
+        for (int column = 0; column < columnCount; column++) {
+            if (column == sourceColumn || column == targetColumn) continue;
+            result.add(new ArrayList<>(columns.get(column)));
+            positions.add(new int[]{getDurabilityHudColumnX(column), getDurabilityHudColumnY(column)});
+            alignments.add(getDurabilityHudColumnAlignment(column));
+            growDirections.add(getDurabilityHudColumnGrowDirection(column));
+        }
+        result.add(Math.min(mergedIndex, result.size()), merged);
+        int positionColumn = beforeTarget ? sourceColumn : targetColumn;
+        positions.add(Math.min(mergedIndex, positions.size()),
+                new int[]{getDurabilityHudColumnX(positionColumn), getDurabilityHudColumnY(positionColumn)});
+        alignments.add(Math.min(mergedIndex, alignments.size()), getDurabilityHudColumnAlignment(positionColumn));
+        growDirections.add(Math.min(mergedIndex, growDirections.size()),
+                getDurabilityHudColumnGrowDirection(positionColumn));
+        while (result.size() < 3) result.add(new ArrayList<>());
+        for (int column = 0; column < positions.size(); column++) {
+            setDurabilityHudColumnPosition(column, positions.get(column)[0], positions.get(column)[1]);
+            setDurabilityHudColumnAlignment(column, alignments.get(column));
+            setDurabilityHudColumnGrowDirection(column, growDirections.get(column));
+        }
+        setDurabilityItemLayout(result, getHiddenDurabilityItems());
+        return true;
+    }
+
+    private boolean isDurabilityEquipmentId(String id) {
+        return DURABILITY_ITEM_IDS.contains(id)
+                && !DURABILITY_COLUMN_2.equals(id)
+                && !DURABILITY_COLUMN_3.equals(id);
+    }
+
+    public int getDurabilityHudColumnX(int column) {
+        return switch (column) {
+            case 1 -> durabilityHudColumn2X;
+            case 2 -> durabilityHudColumn3X;
+            default -> durabilityHudX;
+        };
+    }
+
+    public int getDurabilityHudColumnY(int column) {
+        return switch (column) {
+            case 1 -> durabilityHudColumn2Y;
+            case 2 -> durabilityHudColumn3Y;
+            default -> durabilityHudY;
+        };
+    }
+
+    public void setDurabilityHudColumnPosition(int column, int x, int y) {
+        switch (column) {
+            case 1 -> {
+                durabilityHudColumn2X = x;
+                durabilityHudColumn2Y = y;
+            }
+            case 2 -> {
+                durabilityHudColumn3X = x;
+                durabilityHudColumn3Y = y;
+            }
+            default -> {
+                durabilityHudX = x;
+                durabilityHudY = y;
+            }
+        }
+    }
+
+    public Align getDurabilityHudColumnAlignment(int column) {
+        return switch (column) {
+            case 1 -> durabilityHudColumn2Alignment == null ? durabilityHudAlignment : durabilityHudColumn2Alignment;
+            case 2 -> durabilityHudColumn3Alignment == null ? durabilityHudAlignment : durabilityHudColumn3Alignment;
+            default -> durabilityHudAlignment;
+        };
+    }
+
+    public void setDurabilityHudColumnAlignment(int column, Align alignment) {
+        switch (column) {
+            case 1 -> durabilityHudColumn2Alignment = alignment;
+            case 2 -> durabilityHudColumn3Alignment = alignment;
+            default -> durabilityHudAlignment = alignment;
+        }
+    }
+
+    public GrowDirection getDurabilityHudColumnGrowDirection(int column) {
+        return switch (column) {
+            case 1 -> durabilityHudColumn2GrowDirection == null
+                    ? durabilityHudGrowDirection : durabilityHudColumn2GrowDirection;
+            case 2 -> durabilityHudColumn3GrowDirection == null
+                    ? durabilityHudGrowDirection : durabilityHudColumn3GrowDirection;
+            default -> durabilityHudGrowDirection;
+        };
+    }
+
+    public void setDurabilityHudColumnGrowDirection(int column, GrowDirection direction) {
+        switch (column) {
+            case 1 -> durabilityHudColumn2GrowDirection = direction;
+            case 2 -> durabilityHudColumn3GrowDirection = direction;
+            default -> durabilityHudGrowDirection = direction;
+        }
+    }
+
+    public void syncDurabilityItems() {
+        if (durabilityActiveItems == null && durabilityAvailableItems == null) {
+            durabilityActiveItems = new ArrayList<>(List.of(DURABILITY_ITEM_WEAPON));
+            durabilityAvailableItems = new ArrayList<>();
+        }
+        if (durabilityActiveItems == null) durabilityActiveItems = new ArrayList<>();
+        if (durabilityAvailableItems == null) durabilityAvailableItems = new ArrayList<>();
+
+        durabilityActiveItems = sanitizeDurabilityItemList(durabilityActiveItems, new HashSet<>());
+        durabilityAvailableItems = sanitizeDurabilityItemList(durabilityAvailableItems, new HashSet<>());
+
+        if (durabilityItemColumns == null || durabilityItemColumns.isEmpty()) {
+            durabilityItemColumns = new ArrayList<>();
+            durabilityItemColumns.add(new ArrayList<>());
+            int column = 0;
+            for (String id : durabilityActiveItems) {
+                if (DURABILITY_COLUMN_2.equals(id) || DURABILITY_COLUMN_3.equals(id)) {
+                    column = Math.min(2, column + 1);
+                    while (durabilityItemColumns.size() <= column) durabilityItemColumns.add(new ArrayList<>());
+                } else if (isDurabilityEquipmentId(id)) {
+                    durabilityItemColumns.get(column).add(id);
+                }
+            }
+        }
+
+        List<List<String>> cleanColumns = new ArrayList<>();
+        Set<String> configuredIds = new HashSet<>();
+        for (int column = 0; column < Math.min(3, durabilityItemColumns.size()); column++) {
+            List<String> cleanColumn = new ArrayList<>();
+            for (String id : durabilityItemColumns.get(column)) {
+                if (isDurabilityEquipmentId(id) && configuredIds.add(id)) cleanColumn.add(id);
+            }
+            cleanColumns.add(cleanColumn);
+        }
+        if (cleanColumns.isEmpty()) cleanColumns.add(new ArrayList<>());
+        durabilityItemColumns = cleanColumns;
+
+        List<String> hidden = new ArrayList<>();
+        for (String id : durabilityAvailableItems) {
+            if (isDurabilityEquipmentId(id) && configuredIds.add(id)) hidden.add(id);
+        }
+        for (String id : DURABILITY_ITEM_IDS) {
+            if (isDurabilityEquipmentId(id) && configuredIds.add(id)) hidden.add(id);
+        }
+        durabilityAvailableItems = hidden;
+
+        durabilityActiveItems = new ArrayList<>();
+        for (int column = 0; column < durabilityItemColumns.size(); column++) {
+            if (column == 1) durabilityActiveItems.add(DURABILITY_COLUMN_2);
+            if (column == 2) durabilityActiveItems.add(DURABILITY_COLUMN_3);
+            durabilityActiveItems.addAll(durabilityItemColumns.get(column));
+        }
+    }
+
+    private List<String> sanitizeDurabilityItemList(List<String> items, Set<String> excludedIds) {
+        List<String> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>(excludedIds);
+        for (String id : items) {
+            if (!DURABILITY_ITEM_IDS.contains(id) || seen.contains(id)) continue;
+            result.add(id);
+            seen.add(id);
+        }
+        return result;
     }
 
     public void syncTotemTimerEffects() {
